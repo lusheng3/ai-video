@@ -28,10 +28,13 @@ DOVideo-AI-v2/
         │   │   │   └── WebMvcConfig.java                # 拦截器注册与跨域配置
         │   │   ├── controller/                          # 【控制层 Controller】
         │   │   │   ├── HealthController.java            # 健康检查接口 (/api/health)
-        │   │   │   └── UserController.java              # 用户注册/登录/退出接口 (/api/user/*)
+        │   │   │   ├── UserController.java              # 用户注册/登录/退出接口 (/api/user/*)
+        │   │   │   └── UploadController.java            # 分片预检/上传/合并/预签名播放/列表 (/api/upload/*, /api/media/*)
         │   │   ├── service/                             # 【业务逻辑层 Service】
         │   │   │   ├── AuthService.java                 # 用户注册、登录、Redis 会话管理
-        │   │   │   └── MinioService.java                # MinIO 私有桶、Lifecycle规则、composeObject合并、预签名URL
+        │   │   │   ├── MinioService.java                # MinIO 私有桶、Lifecycle规则、composeObject合并、预签名URL
+        │   │   │   ├── UploadService.java               # 秒传预检、Redis Set 断点续传、先落盘后记账、合并锁与 composeObject
+        │   │   │   └── UploadReconciliationJob.java     # 后台定时校准卡在“合并中(status=5)”的任务，保障最终一致性
         │   │   ├── mapper/                              # 【持久层 DAO / Mapper】
         │   │   │   ├── UserInfoMapper.java              # 用户主表 Mapper
         │   │   │   ├── VideoTaskRecordMapper.java       # 视频任务主表 Mapper
@@ -44,7 +47,10 @@ DOVideo-AI-v2/
         │   │   │   └── AiSummaryResult.java             # 表4: ai_summary_result (JSON)
         │   │   ├── dto/                                 # 【数据传输对象层 DTO】
         │   │   │   ├── AuthRequest.java
-        │   │   │   └── AuthResponse.java
+        │   │   │   ├── AuthResponse.java
+        │   │   │   ├── UploadCheckResponse.java         # /upload/check 响应（秒传标记 + 已传分片集合）
+        │   │   │   ├── UploadMergeRequest.java          # /upload/merge 请求体
+        │   │   │   └── UploadMergeResponse.java         # /upload/merge 响应体
         │   │   ├── enums/                               # 【业务状态机枚举层】
         │   │   │   ├── AccountTypeEnum.java             # 0-免费用户，1-付费VIP
         │   │   │   └── TaskStatusEnum.java              # 0-待分析，1-排队中，2-处理中，3-已完成，4-失败，5-合并中
@@ -61,5 +67,6 @@ DOVideo-AI-v2/
                 │   └── GlobalExceptionHandlerTest.java
                 └── service/
                     ├── AuthServiceTest.java             # 注册/登录/唯一键冲突单元测试
-                    └── MinioServiceTest.java            # MinIO Lifecycle/composeObject/预签名URL单元测试
+                    ├── MinioServiceTest.java            # MinIO Lifecycle/composeObject/预签名URL单元测试
+                    └── UploadServiceTest.java           # 秒传/断点续传/分片MD5校验/先落盘后记账/合并锁/校准单测
 ```

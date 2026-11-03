@@ -15,4 +15,12 @@
   - 通过 `AuthServiceTest` 单元测试（全量 6/6 通过）。
 - **2026-11-03 [步骤 3 完成]**：
   - 实现 `MinioConfig` 与 `MinioService`，封装私有 Bucket 创建、`temp_chunks/` 前缀 1 天自动物理删除的 Lifecycle 生命周期规则、分片上传 `putChunkObject`、服务端原子合并 `composeChunks`（`minioClient.composeObject`）、5 分钟有效期预签名链接 `getPresignedPlayUrl` 与对象存在性探测 `objectExists`。
-  - 通过 `MinioServiceTest` 单元测试（全量 9/9 通过，`mvn test` BUILD SUCCESS）。
+  - 通过 `MinioServiceTest` 单元测试（全量 9/9 通过）。
+- **2026-11-03 [步骤 4 完成]**：
+  - 实现 `UploadService`、`UploadController` 与 `UploadReconciliationJob`：
+    - `GET /api/upload/check`：秒传预检（`deduplicated = true`）与 Redis Set（`upload:task:{fileMd5}`）已上传分片序号集合返回；
+    - `POST /api/upload/chunk`：分片 MD5 比特翻转校验 + 严格“先落盘 MinIO，后 `SADD` 记账 Redis Set（24h TTL）”；
+    - `POST /api/upload/merge`：前端总指挥触发合并，Redisson 合并锁（`dovideo:merge:{fileMd5}`）+ 状态幂等校验 + 分片总数核对 + 状态 5（合并中）标记 + MinIO `composeObject` 服务端合并；
+    - `UploadReconciliationJob`：定时扫描超时卡在“合并中(5)”的记录向 MinIO `statObject` 核实校准，保障最终一致性；
+    - `GET /api/media/play-url/{taskId}` 与 `GET /api/media/list`：5 分钟预签名播放链接与用户历史列表。
+  - 通过 `UploadServiceTest` 6 项单元测试（全量 15/15 通过，`mvn test` BUILD SUCCESS）。
