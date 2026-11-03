@@ -13,11 +13,15 @@ DOVideo-AI-v2/
 │   └── broker.conf                   # RocketMQ Broker 配置文件（含 18 级延迟消息与刷盘说明）
 ├── memory-bank/                      # 项目长期记忆真源（Source of Truth）
 └── server/                           # Spring Boot 3 后端工程（在 IDEA 中打开此目录）
-    ├── pom.xml                       # Maven 依赖配置
+    ├── pom.xml                       # Maven 依赖配置（含 spring-boot-starter-aop）
     └── src/
         ├── main/
         │   ├── java/com/dovideo/
         │   │   ├── ServerApplication.java               # 启动类（@MapperScan("com.dovideo.mapper")）
+        │   │   ├── annotation/                          # 【自定义注解层】
+        │   │   │   └── RateLimit.java                   # 令牌桶限流注解 (@RateLimit)
+        │   │   ├── aspect/                              # 【AOP 切面层】
+        │   │   │   └── RateLimitAspect.java             # Redis Hash + Lua 惰性令牌桶限流切面（区分免费/VIP配额）
         │   │   ├── common/                              # 【公共层】统一返回体与错误码
         │   │   │   ├── ErrorCode.java
         │   │   │   └── Result.java
@@ -59,10 +63,14 @@ DOVideo-AI-v2/
         │   │       └── GlobalExceptionHandler.java
         │   └── resources/
         │       ├── application.yml                      # 应用主配置
-        │       └── db/
-        │           └── schema.sql                       # 4 张核心业务表建表 SQL（含索引与唯一约束）
+        │       ├── db/
+        │       │   └── schema.sql                       # 4 张核心业务表建表 SQL（含索引与唯一约束）
+        │       └── lua/
+        │           └── token_bucket.lua                 # Redis Hash 惰性计算令牌桶 Lua 脚本
         └── test/
             └── java/com/dovideo/
+                ├── aspect/
+                │   └── RateLimitAspectTest.java         # 令牌桶 Lua 切面单元测试
                 ├── exception/
                 │   └── GlobalExceptionHandlerTest.java
                 └── service/
