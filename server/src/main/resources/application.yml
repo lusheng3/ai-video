@@ -1,0 +1,73 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: dovideo-ai-server
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 25MB
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:127.0.0.1}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:dovideo_ai}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD:root}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      database: 0
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      logic-delete-field: isDeleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+rocketmq:
+  name-server: ${ROCKETMQ_NAMESRV:127.0.0.1:9876}
+  producer:
+    group: dovideo-producer-group
+    send-message-timeout: 3000
+    retry-times-when-send-failed: 2
+
+app:
+  # 压测与本地零成本开发开关：开启后跳过外部付费 ASR/LLM，使用可配置模拟延迟返回标准数据
+  mock-enabled: ${APP_MOCK_ENABLED:true}
+  mock-process-delay-ms: ${APP_MOCK_DELAY_MS:1500}
+  minio:
+    endpoint: ${MINIO_ENDPOINT:http://127.0.0.1:9000}
+    access-key: ${MINIO_ACCESS_KEY:minioadmin}
+    secret-key: ${MINIO_SECRET_KEY:minioadmin123}
+    bucket-name: ${MINIO_BUCKET:dovideo-private}
+    presign-expiry-minutes: 5
+    temp-chunk-prefix: temp_chunks/
+    video-prefix: videos/
+    lifecycle-expire-days: 1
+  upload:
+    chunk-size-bytes: 5242880
+    redis-ttl-hours: 24
+  rate-limit:
+    enabled: ${APP_RATE_LIMIT_ENABLED:true}
+    free-user-rate-per-sec: 1.0
+    free-user-capacity: 5
+    vip-user-rate-per-sec: 5.0
+    vip-user-capacity: 20
+    expire-seconds: 60
+  mq:
+    analysis-topic: video-analysis-topic
+    consumer-group: video-analysis-group
+    dlq-topic: "%DLQ%video-analysis-group"
+    custom-dlq-topic: video-analysis-dlq-topic
+    max-reconsume-times: 3
+  ai:
+    base-url: ${SILICONFLOW_BASE_URL:https://api.siliconflow.cn/v1}
+    api-key: ${SILICONFLOW_API_KEY:demo-key}
+    asr-model: FunAudioLLM/SenseVoiceSmall
+    llm-model: deepseek-ai/DeepSeek-V3
+    max-retries: 3
+    initial-backoff-ms: 1000

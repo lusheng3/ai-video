@@ -1,0 +1,23 @@
+# Maven & Java
+target/
+*.class
+*.jar
+*.war
+*.ear
+hs_err_pid*
+
+# Node / Vue
+node_modules/
+dist/
+.vite/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# Runtime data & logs
+logs/
+*.log
+.env
