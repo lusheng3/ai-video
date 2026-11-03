@@ -12,4 +12,7 @@
   - 编写 `db/schema.sql`，创建 `user_info`、`video_task_record`、`video_transcription`、`ai_summary_result` 4 张垂直拆分业务表，落实 `TINYINT` 状态机、`(user_id, create_time)` 与 `(status, create_time)` 联合索引、`video_md5` 与 `task_id` 唯一约束及逻辑删除规范。
   - 建立完整的企业级分层包结构：`entity`、`enums`、`mapper`、`dto`、`service`、`config`、`controller`。
   - 实现 `AuthService`、`AuthInterceptor`、`WebMvcConfig` 与 `UserController`（注册、登录、退出、当前身份查询）。
-  - 通过 `AuthServiceTest` 单元测试（全量 6/6 通过，`mvn test` BUILD SUCCESS）。
+  - 通过 `AuthServiceTest` 单元测试（全量 6/6 通过）。
+- **2026-11-03 [步骤 3 完成]**：
+  - 实现 `MinioConfig` 与 `MinioService`，封装私有 Bucket 创建、`temp_chunks/` 前缀 1 天自动物理删除的 Lifecycle 生命周期规则、分片上传 `putChunkObject`、服务端原子合并 `composeChunks`（`minioClient.composeObject`）、5 分钟有效期预签名链接 `getPresignedPlayUrl` 与对象存在性探测 `objectExists`。
+  - 通过 `MinioServiceTest` 单元测试（全量 9/9 通过，`mvn test` BUILD SUCCESS）。

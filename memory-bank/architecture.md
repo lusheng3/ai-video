@@ -8,7 +8,7 @@
 DOVideo-AI-v2/
 ├── AGENTS.md                         # AI 协作与开发铁律（含 MQ 消费者六步规范与 memory-bank 规则）
 ├── CLAUDE.md                         # 与 AGENTS.md 保持同步的指令文件
-├── docker-compose.yml                # MySQL 8 + Redis 7 (AOF) + MinIO + RocketMQ 5.3.4 一键编排
+├── docker-compose.yml                # MySQL 8 (13306) + Redis 7 (16379) + MinIO (9000/9001) + RocketMQ 5.3.4 一键编排
 ├── rocketmq/
 │   └── broker.conf                   # RocketMQ Broker 配置文件（含 18 级延迟消息与刷盘说明）
 ├── memory-bank/                      # 项目长期记忆真源（Source of Truth）
@@ -24,12 +24,14 @@ DOVideo-AI-v2/
         │   │   ├── config/                              # 【配置与拦截器层】
         │   │   │   ├── AppProperties.java               # 外部化业务参数
         │   │   │   ├── AuthInterceptor.java             # Redis Token 登录鉴权拦截器
+        │   │   │   ├── MinioConfig.java                 # MinioClient Bean 初始化配置
         │   │   │   └── WebMvcConfig.java                # 拦截器注册与跨域配置
         │   │   ├── controller/                          # 【控制层 Controller】
         │   │   │   ├── HealthController.java            # 健康检查接口 (/api/health)
         │   │   │   └── UserController.java              # 用户注册/登录/退出接口 (/api/user/*)
         │   │   ├── service/                             # 【业务逻辑层 Service】
-        │   │   │   └── AuthService.java                 # 用户注册、登录、Redis 会话管理
+        │   │   │   ├── AuthService.java                 # 用户注册、登录、Redis 会话管理
+        │   │   │   └── MinioService.java                # MinIO 私有桶、Lifecycle规则、composeObject合并、预签名URL
         │   │   ├── mapper/                              # 【持久层 DAO / Mapper】
         │   │   │   ├── UserInfoMapper.java              # 用户主表 Mapper
         │   │   │   ├── VideoTaskRecordMapper.java       # 视频任务主表 Mapper
@@ -58,5 +60,6 @@ DOVideo-AI-v2/
                 ├── exception/
                 │   └── GlobalExceptionHandlerTest.java
                 └── service/
-                    └── AuthServiceTest.java             # 注册/登录/唯一键冲突单元测试
+                    ├── AuthServiceTest.java             # 注册/登录/唯一键冲突单元测试
+                    └── MinioServiceTest.java            # MinIO Lifecycle/composeObject/预签名URL单元测试
 ```
