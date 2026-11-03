@@ -1,10 +1,10 @@
 services:
   mysql:
-    image: mysql:8.0
+    image: mysql:8
     container_name: dovideo-mysql
     restart: unless-stopped
     ports:
-      - "127.0.0.1:3306:3306"
+      - "127.0.0.1:13306:3306"
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-dovideo_ai}
@@ -17,17 +17,17 @@ services:
       - mysql-data:/var/lib/mysql
 
   redis:
-    image: redis:7.4-alpine
+    image: redis:latest
     container_name: dovideo-redis
     restart: unless-stopped
     ports:
-      - "127.0.0.1:6379:6379"
+      - "127.0.0.1:16379:6379"
     command: redis-server --appendonly yes --appendfsync everysec
     volumes:
       - redis-data:/data
 
   minio:
-    image: minio/minio:RELEASE.2024-11-07T00-52-20Z
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
     container_name: dovideo-minio
     restart: unless-stopped
     ports:

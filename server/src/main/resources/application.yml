@@ -9,14 +9,14 @@ spring:
       max-file-size: 20MB
       max-request-size: 25MB
   datasource:
-    url: jdbc:mysql://${MYSQL_HOST:127.0.0.1}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:dovideo_ai}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+    url: jdbc:mysql://${MYSQL_HOST:127.0.0.1}:${MYSQL_PORT:13306}/${MYSQL_DATABASE:dovideo_ai}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
     username: ${MYSQL_USERNAME:root}
     password: ${MYSQL_PASSWORD:root}
     driver-class-name: com.mysql.cj.jdbc.Driver
   data:
     redis:
       host: ${REDIS_HOST:127.0.0.1}
-      port: ${REDIS_PORT:6379}
+      port: ${REDIS_PORT:16379}
       database: 0
 
 mybatis-plus:
