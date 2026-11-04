@@ -1,0 +1,22 @@
+app:
+  # 关闭 Mock，走真实 ASR / LLM
+  mock-enabled: false
+
+  ai:
+    # FFmpeg 可执行文件绝对路径（Windows 反斜杠请改成 /）
+    ffmpeg-path: C:/Users/lusheng/AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-9.0.2-full_build/bin/ffmpeg.exe
+
+    # 语音转写：硅基流动（OpenAI 兼容 /audio/transcriptions）
+    asr:
+      base-url: https://api.siliconflow.cn/v1
+      api-key: sk-REPLACE_WITH_SILICONFLOW_KEY
+      model: FunAudioLLM/SenseVoiceSmall
+      language: zh
+
+    # 结构化总结：DeepSeek 官方（OpenAI 兼容 /chat/completions）
+    llm:
+      base-url: https://api.deepseek.com
+      api-key: sk-REPLACE_WITH_DEEPSEEK_KEY
+      model: deepseek-chat
+      temperature: 0.3
+      max-tokens: 4096
