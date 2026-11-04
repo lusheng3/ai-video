@@ -36,4 +36,11 @@
   - 实现 `ExponentialBackoffRetry`：429/5xx/IO 异常按 `1s -> 2s -> 4s` 退避重试最多 3 次；400/401/403 等永久异常立即失败。
   - 实现 `AudioExtractionService`：MinIO 下载视频 → FFmpeg 提取 16kHz 单声道 wav → `finally` 删除本地临时文件，保证服务无状态化；Mock 模式跳过 FFmpeg。
   - 实现 `SummaryPromptBuilder` 四段式 Prompt + Few-Shot，强制输出严格 JSON。
-  - 通过 `ExponentialBackoffRetryTest` 与 `OpenAiCompatibleLlmClientTest`（MockWebServer 模拟 429/401/JSON 围栏）（全量 25/25 通过，`mvn test` BUILD SUCCESS）。
+  - 通过 `ExponentialBackoffRetryTest` 与 `OpenAiCompatibleLlmClientTest`（MockWebServer 模拟 429/401/JSON 围栏）。
+- **2026-11-04 [步骤 7 完成]**：
+  - 实现 `AnalysisService`：锁外前置状态拦截（Redis `video:status:{md5}` → MySQL 同内容历史结果复用）→ 标记 `QUEUED` + 写 Redis `PROCESSING` → `RocketMQTemplate.syncSend` 同步投递轻量消息（仅 taskId/videoMd5/minioPath/userGoal）→ 校验 `SEND_OK` 后立即返回；投递异常回滚状态并返回 HTTP 503。
+  - 实现 `VideoAnalysisConsumer`（`maxReconsumeTimes = 3`），严格落实标准六步流程：解析消息 → `tryLock()`（无 leaseTime，启用 WatchDog）→ 抢锁失败直接 ACK → 二次幂等校验（任务已 SUCCESS / 同内容已有结果）→ 音频提取 + ASR + LLM 总结 → 唯一索引兜底落库 + 更新 SUCCESS + `finally` 检查 `isHeldByCurrentThread()` 释放锁。
+  - 实现 `AnalysisResultWriter`：逐字稿与结构化总结写入垂直分表，捕获 `DuplicateKeyException` 幂等容忍；同步更新主表状态与 Redis 成功状态。
+  - 实现 `DeadLetterConsumer`：监听 `%DLQ%video-analysis-group`，将任务状态置为 `FAILED` 并写入错误原因，前端轮询可立刻感知。
+  - 实现 `AnalysisController`：`POST /api/analysis/submit`（`@RateLimit(rate=1.0, capacity=5)`）、`GET /api/analysis/status/{taskId}`、`POST /api/analysis/sync-benchmark`（仅 Mock 模式，供 JMeter 同步/异步对比）。
+  - 通过 `AnalysisServiceTest`、`VideoAnalysisConsumerTest`、`DeadLetterConsumerTest`（全量 35/35 通过，`mvn test` BUILD SUCCESS）。

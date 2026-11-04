@@ -48,13 +48,19 @@ DOVideo-AI-v2/
         │   │   ├── controller/                          # 【控制层 Controller】
         │   │   │   ├── HealthController.java            # 健康检查接口 (/api/health)
         │   │   │   ├── UserController.java              # 用户注册/登录/退出接口 (/api/user/*)
-        │   │   │   └── UploadController.java            # 分片预检/上传/合并/预签名播放/列表 (/api/upload/*, /api/media/*)
+        │   │   │   ├── UploadController.java            # 分片预检/上传/合并/预签名播放/列表 (/api/upload/*, /api/media/*)
+        │   │   │   └── AnalysisController.java          # 异步分析提交/3s轮询/同步对照组 (/api/analysis/*)
+        │   │   ├── consumer/                            # 【RocketMQ 消费者层】
+        │   │   │   ├── VideoAnalysisConsumer.java       # 标准六步流程 + WatchDog 锁 + 唯一索引兜底
+        │   │   │   └── DeadLetterConsumer.java          # 死信队列兜底：置 FAILED 并写 Redis 失败原因
         │   │   ├── service/                             # 【业务逻辑层 Service】
         │   │   │   ├── AuthService.java                 # 用户注册、登录、Redis 会话管理
         │   │   │   ├── MinioService.java                # MinIO 私有桶、Lifecycle规则、composeObject合并、预签名URL
         │   │   │   ├── UploadService.java               # 秒传预检、Redis Set 断点续传、先落盘后记账、合并锁与 composeObject
         │   │   │   ├── UploadReconciliationJob.java     # 后台定时校准卡在“合并中(status=5)”的任务，保障最终一致性
-        │   │   │   └── AudioExtractionService.java      # MinIO 下载 + FFmpeg 提取 16kHz 音频 + 临时文件清理
+        │   │   │   ├── AudioExtractionService.java      # MinIO 下载 + FFmpeg 提取 16kHz 音频 + 临时文件清理
+        │   │   │   ├── AnalysisService.java             # 前置状态拦截 + MQ 同步投递 + 3s 轮询状态聚合 + 同步对照组
+        │   │   │   └── AnalysisResultWriter.java        # 逐字稿/总结落库（唯一索引兜底）+ 更新 SUCCESS + Redis 缓存
         │   │   ├── mapper/                              # 【持久层 DAO / Mapper】
         │   │   │   ├── UserInfoMapper.java              # 用户主表 Mapper
         │   │   │   ├── VideoTaskRecordMapper.java       # 视频任务主表 Mapper
@@ -70,7 +76,11 @@ DOVideo-AI-v2/
         │   │   │   ├── AuthResponse.java
         │   │   │   ├── UploadCheckResponse.java         # /upload/check 响应（秒传标记 + 已传分片集合）
         │   │   │   ├── UploadMergeRequest.java          # /upload/merge 请求体
-        │   │   │   └── UploadMergeResponse.java         # /upload/merge 响应体
+        │   │   │   ├── UploadMergeResponse.java         # /upload/merge 响应体
+        │   │   │   ├── AnalysisSubmitRequest.java       # /analysis/submit 请求体
+        │   │   │   ├── AnalysisSubmitResponse.java      # /analysis/submit 响应体
+        │   │   │   ├── AnalysisStatusResponse.java      # /analysis/status 响应体（含逐字稿+结构化总结）
+        │   │   │   └── AnalysisTaskMessage.java         # 投递到 RocketMQ 的轻量消息体
         │   │   ├── enums/                               # 【业务状态机枚举层】
         │   │   │   ├── AccountTypeEnum.java             # 0-免费用户，1-付费VIP
         │   │   │   └── TaskStatusEnum.java              # 0-待分析，1-排队中，2-处理中，3-已完成，4-失败，5-合并中
