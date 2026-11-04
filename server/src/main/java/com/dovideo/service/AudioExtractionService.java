@@ -9,89 +9,150 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 
 /**
- * 音视频处理服务：从 MinIO 下载视频 -> FFmpeg 提取 16kHz 单声道音频 -> 清理本地临时文件，保证服务无状态化。
- * 开启 app.mock-enabled=true 时跳过 FFmpeg 调用，方便本地无 FFmpeg 环境直接跑通全链路。
+ * 音视频处理服务：
+ * 1. 从 MinIO 下载视频到本地临时文件；
+ * 2. FFmpeg 提取 16kHz 单声道音频，并按 asrSegmentSeconds（默认 300 秒）切段；
+ * 3. 逐段调用 ASR，拼接为带时间范围的完整逐字稿；
+ * 4. 调用 LLM 生成结构化总结；
+ * 5. finally 中删除所有临时文件与临时目录，保证服务无状态化。
+ *
+ * <p>为什么要分段：11 分钟视频提取出的 16kHz WAV 约 21MB，30 分钟约 56MB，
+ * 1 小时超过 100MB，直接上传会超过多数 ASR 接口的单文件上限。分段后每段约 9.4MB，
+ * 既规避大小限制，也便于失败时只重试单段。
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class AudioExtractionService {
 
+    private static final long PROCESS_TIMEOUT_MINUTES = 30;
+    private static final int SAMPLE_RATE = 16000;
+
     private final AppProperties appProperties;
     private final MinioService minioService;
     private final AsrClient asrClient;
     private final LlmClient llmClient;
 
-    private static final long FFMPEG_TIMEOUT_MINUTES = 10;
-
     /**
-     * 从 MinIO 对象中提取音频并转写为逐字稿
+     * 从 MinIO 对象中提取音频、分段转写，返回带时间范围的完整逐字稿
      */
     public String transcribeFromMinio(String objectKey) {
         Path videoTemp = null;
-        Path audioTemp = null;
+        Path audioDir = null;
         try {
             videoTemp = Files.createTempFile("dovideo-video-", ".mp4");
-            try (var inputStream = minioService.getObjectStream(objectKey)) {
-                Files.copy(inputStream, videoTemp, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            try (InputStream inputStream = minioService.getObjectStream(objectKey)) {
+                Files.copy(inputStream, videoTemp, StandardCopyOption.REPLACE_EXISTING);
             }
-            audioTemp = extractAudio(videoTemp);
-            return asrClient.transcribe(audioTemp);
+
+            // 压测/本地开发模式：跳过 FFmpeg 与分段，直接返回 Mock 逐字稿
+            if (appProperties.isMockEnabled()) {
+                Path mockAudio = Files.createTempFile("dovideo-audio-", ".wav");
+                Files.writeString(mockAudio, "mock-audio");
+                try {
+                    return asrClient.transcribe(mockAudio);
+                } finally {
+                    deleteQuietly(mockAudio);
+                }
+            }
+
+            double durationSeconds = probeDurationSeconds(videoTemp);
+            audioDir = Files.createTempDirectory("dovideo-audio-segments-");
+            List<Path> segments = splitAudio(videoTemp, audioDir);
+            log.info("audio_segmented video={} durationSeconds={} segments={}",
+                    objectKey, durationSeconds, segments.size());
+
+            StringBuilder transcript = new StringBuilder();
+            int segmentSeconds = appProperties.getAi().getAsrSegmentSeconds();
+            for (int index = 0; index < segments.size(); index++) {
+                double start = (double) index * segmentSeconds;
+                double end = durationSeconds > 0
+                        ? Math.min(start + segmentSeconds, durationSeconds)
+                        : start + segmentSeconds;
+                String part = asrClient.transcribe(segments.get(index));
+                if (part == null || part.isBlank()) {
+                    continue;
+                }
+                transcript.append('[').append(formatTime(start)).append('-').append(formatTime(end)).append("]\n");
+                transcript.append(part.trim()).append("\n\n");
+            }
+            return transcript.toString().trim();
         } catch (IOException ex) {
             throw new IllegalStateException("视频下载或音频提取失败: " + ex.getMessage(), ex);
         } finally {
             deleteQuietly(videoTemp);
-            deleteQuietly(audioTemp);
+            deleteDirectoryQuietly(audioDir);
         }
     }
 
     /**
-     * 调用 FFmpeg 提取 16kHz 单声道 wav 音频
+     * FFmpeg 提取 16kHz 单声道音频并按段切割，输出 segment-000.wav、segment-001.wav ...
      */
-    public Path extractAudio(Path videoFile) {
-        try {
-            Path audioFile = Files.createTempFile("dovideo-audio-", ".wav");
-            if (appProperties.isMockEnabled()) {
-                // 压测/本地开发模式：写一小段占位字节，跳过真实 FFmpeg 调用
-                Files.writeString(audioFile, "mock-audio");
-                log.info("mock_audio_extracted video={} audio={}", videoFile, audioFile);
-                return audioFile;
-            }
-            Files.deleteIfExists(audioFile);
+    List<Path> splitAudio(Path videoFile, Path outputDir) {
+        AppProperties.AiProps ai = appProperties.getAi();
+        Path pattern = outputDir.resolve("segment-%03d.wav");
+        List<String> command = List.of(
+                ai.getFfmpegPath(),
+                "-y",
+                "-i", videoFile.toString(),
+                "-vn",
+                "-ac", "1",
+                "-ar", String.valueOf(SAMPLE_RATE),
+                "-f", "segment",
+                "-segment_time", String.valueOf(ai.getAsrSegmentSeconds()),
+                "-reset_timestamps", "1",
+                "-segment_format", "wav",
+                pattern.toString()
+        );
+        runProcess(command, "FFmpeg 音频分段", PROCESS_TIMEOUT_MINUTES);
 
-            ProcessBuilder processBuilder = new ProcessBuilder(
-                    appProperties.getAi().getFfmpegPath(),
-                    "-y",
-                    "-i", videoFile.toString(),
-                    "-vn",
-                    "-ac", "1",
-                    "-ar", "16000",
-                    "-f", "wav",
-                    audioFile.toString()
-            );
-            processBuilder.redirectErrorStream(true);
-            Process process = processBuilder.start();
-            boolean finished = process.waitFor(FFMPEG_TIMEOUT_MINUTES, TimeUnit.MINUTES);
-            if (!finished) {
-                process.destroyForcibly();
-                throw new IllegalStateException("FFmpeg 提取音频超时（超过 " + FFMPEG_TIMEOUT_MINUTES + " 分钟）");
+        try (Stream<Path> stream = Files.list(outputDir)) {
+            List<Path> segments = stream
+                    .filter(path -> path.getFileName().toString().endsWith(".wav"))
+                    .sorted()
+                    .toList();
+            if (segments.isEmpty()) {
+                throw new IllegalStateException("FFmpeg 未生成任何音频分段");
             }
-            if (process.exitValue() != 0) {
-                throw new IllegalStateException("FFmpeg 提取音频失败，exitCode=" + process.exitValue());
-            }
-            log.info("ffmpeg_extract_audio_success video={} audio={} size={}",
-                    videoFile, audioFile, Files.size(audioFile));
-            return audioFile;
+            return segments;
         } catch (IOException ex) {
-            throw new IllegalStateException("FFmpeg 执行失败: " + ex.getMessage(), ex);
-        } catch (InterruptedException ex) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("FFmpeg 执行被中断", ex);
+            throw new IllegalStateException("读取音频分段目录失败: " + ex.getMessage(), ex);
+        }
+    }
+
+    /**
+     * 用 ffprobe 读取视频总时长；失败时返回 -1，由调用方退化为按固定段长估算
+     */
+    double probeDurationSeconds(Path videoFile) {
+        AppProperties.AiProps ai = appProperties.getAi();
+        try {
+            ProcessResult result = runProcess(List.of(
+                    ai.getFfprobePath(),
+                    "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    videoFile.toString()
+            ), "FFprobe 读取时长", 2);
+            String text = result.output().trim();
+            if (text.isEmpty()) {
+                return -1;
+            }
+            return Double.parseDouble(text.split("\\s+")[0]);
+        } catch (RuntimeException ex) {
+            log.warn("ffprobe_duration_failed video={} reason={}", videoFile, ex.getMessage());
+            return -1;
         }
     }
 
@@ -100,6 +161,49 @@ public class AudioExtractionService {
      */
     public SummaryResult analyzeTranscript(String transcript, String userGoal) {
         return llmClient.summarize(transcript, userGoal);
+    }
+
+    private ProcessResult runProcess(List<String> command, String action, long timeoutMinutes) {
+        try {
+            ProcessBuilder processBuilder = new ProcessBuilder(new ArrayList<>(command));
+            processBuilder.redirectErrorStream(true);
+            Process process = processBuilder.start();
+            byte[] outputBytes = process.getInputStream().readAllBytes();
+            boolean finished = process.waitFor(timeoutMinutes, TimeUnit.MINUTES);
+            if (!finished) {
+                process.destroyForcibly();
+                throw new IllegalStateException(action + " 超时（超过 " + timeoutMinutes + " 分钟）");
+            }
+            String output = new String(outputBytes, StandardCharsets.UTF_8);
+            if (process.exitValue() != 0) {
+                throw new IllegalStateException(action + " 失败，exitCode="
+                        + process.exitValue() + "，output=" + truncate(output));
+            }
+            return new ProcessResult(process.exitValue(), output);
+        } catch (IOException ex) {
+            throw new IllegalStateException(action + " 执行失败: " + ex.getMessage(), ex);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(action + " 被中断", ex);
+        }
+    }
+
+    static String formatTime(double seconds) {
+        int totalSeconds = (int) Math.round(Math.max(0, seconds));
+        int hours = totalSeconds / 3600;
+        int minutes = (totalSeconds % 3600) / 60;
+        int secs = totalSeconds % 60;
+        if (hours > 0) {
+            return String.format("%02d:%02d:%02d", hours, minutes, secs);
+        }
+        return String.format("%02d:%02d", minutes, secs);
+    }
+
+    private static String truncate(String text) {
+        if (text == null) {
+            return "";
+        }
+        return text.length() > 500 ? text.substring(0, 500) + "..." : text;
     }
 
     private void deleteQuietly(Path path) {
@@ -111,5 +215,19 @@ public class AudioExtractionService {
         } catch (IOException ex) {
             log.warn("temp_file_delete_failed path={} reason={}", path, ex.getMessage());
         }
+    }
+
+    private void deleteDirectoryQuietly(Path directory) {
+        if (directory == null) {
+            return;
+        }
+        try (Stream<Path> stream = Files.walk(directory)) {
+            stream.sorted(Comparator.reverseOrder()).forEach(this::deleteQuietly);
+        } catch (IOException ex) {
+            log.warn("temp_dir_delete_failed path={} reason={}", directory, ex.getMessage());
+        }
+    }
+
+    private record ProcessResult(int exitCode, String output) {
     }
 }

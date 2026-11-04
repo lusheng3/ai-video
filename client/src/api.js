@@ -63,18 +63,20 @@ export const api = {
     method: 'POST',
     body: JSON.stringify(body)
   }),
-  checkUpload: (params) => request(`/api/upload/check?${new URLSearchParams(params)}`),
-  uploadChunk: (params, blob) => {
+  checkUpload: (params, options = {}) => request(`/api/upload/check?${new URLSearchParams(params)}`, options),
+  uploadChunk: (params, blob, options = {}) => {
     const form = new FormData()
     form.append('file', blob)
     return request(`/api/upload/chunk?${new URLSearchParams(params)}`, {
       method: 'POST',
-      body: form
+      body: form,
+      ...options
     })
   },
-  merge: (body) => request('/api/upload/merge', {
+  merge: (body, options = {}) => request('/api/upload/merge', {
     method: 'POST',
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    ...options
   }),
   listTasks: () => request('/api/media/list'),
   playUrl: (taskId) => request(`/api/media/play-url/${taskId}`),

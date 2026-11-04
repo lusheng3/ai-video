@@ -64,6 +64,9 @@ public class AppProperties {
         private int maxRetries = 3;
         private long initialBackoffMs = 1000L;
         private String ffmpegPath = "ffmpeg";
+        private String ffprobePath = "ffprobe";
+        /** 长视频音频分段长度（秒）：每段单独调用 ASR，最后拼接逐字稿，避免单文件超过第三方大小限制 */
+        private int asrSegmentSeconds = 300;
         private AsrProps asr = new AsrProps();
         private LlmProps llm = new LlmProps();
     }

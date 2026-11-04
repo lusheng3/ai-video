@@ -73,3 +73,9 @@ pm run dev 启动后 http://127.0.0.1:5173 返回 200，Vite /api 代理到后�
   - 充值后重新验证：fmpeg_extract_audio_success（850KB）→ sr_transcribe_success chars=103（约 6.2s）→ llm_summarize_success keyPoints=4 chapters=3 tokens=683（约 8.9s）→ ideo_analysis_completed，taskId=3 状态 SUCCESS，端到端约 16s。
   - 真实逐字稿存在同音字错误（遍利/右子数/递归站），DeepSeek 在总结中自动纠正为「遍历/右子树/递归栈」，体现 ASR + LLM 串联价值。
   - 修复成功后 error_msg 残留问题：MyBatis-Plus updateById 默认忽略 null，改用 LambdaUpdateWrapper.set(error_msg, null) 显式清空；单测 36/36 通过。
+
+- **2026-11-05 [前端弱网上传改造]**：
+  - 真实 1.63GB 文件上传时，分片 167 经 Vite 代理连 8080 出现 connect ETIMEDOUT，Promise.all 整批 reject，页面显示 Failed to fetch；Redis Set 已保存 333/335 片（缺 167、222），证明断点数据安全。
+  - 重构 UploadPanel.vue：分片级状态 + 单分片自动重试 3 次（1s→2s→4s + jitter）+ 60s AbortController 超时 + 错误分类（401/403/400 永久失败，408/429/5xx/网络可重试）+ worker 失败不中断整批 + 批次结束 /check 服务端对账 + 仅全部分片就绪才 merge + PARTIAL_FAILED 状态与失败分片列表 + merge 409/网络重试。
+  - pi.js 支持传入 AbortSignal；
+pm run build 通过（93.70 kB JS）。
