@@ -53,3 +53,12 @@
   - 异步 RT 验证：冷启动首次提交 268ms（含 MQ 路由首次发现与 JIT），热路径第二次提交 **52ms**。
   - 令牌桶验证：连续 7 次提交，前 5 次 HTTP 200，第 6、7 次准确返回 HTTP 429（capacity=5, rate=1/s）。
   - RocketMQ 消费日志确认：nalysis_mq_sent → ideo_analysis_completed，两个任务均成功消费。
+
+- **2026-11-04 [步骤 8 完成]**：
+  - docs/api-contract.md：完整接口契约（认证、分片上传/秒传/断点续传、合并、预签名播放、异步提交、3s 轮询、同步对照组、错误码）。
+  - client/：Vue 3 + Vite 工作台，包含登录/注册、分片上传（5MB 切片 + Web Worker 计算 MD5 + 3 并发 + 秒传/续传）、任务列表、3 秒定时轮询（SUCCESS/FAILED 自动清除）、转写稿与结构化总结展示、5 分钟预签名视频回放。
+  - jmeter/dovideo-benchmark.jmx + jmeter/README.md：setUp 登录提取 token、异步提交 RT、3s 轮询、令牌桶 200x5+429x5、同步对照组（默认禁用）；XML 结构校验通过。
+  - 验证：
+pm install（35 包）+ 
+pm run build 成功（dist 88.82 kB JS / 2.62 kB CSS）；
+pm run dev 启动后 http://127.0.0.1:5173 返回 200，Vite /api 代理到后端 /api/health 返回 200。

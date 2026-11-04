@@ -12,6 +12,26 @@ DOVideo-AI-v2/
 ├── rocketmq/
 │   └── broker.conf                   # RocketMQ Broker 配置文件（含 18 级延迟消息与刷盘说明）
 ├── memory-bank/                      # 项目长期记忆真源（Source of Truth）
+├── docs/
+│   └── api-contract.md               # 前后端接口契约（请求/响应/错误码/状态机）
+├── client/                           # Vue 3 + Vite 可视化工作台
+│   ├── package.json
+│   ├── vite.config.js                # /api 代理到 http://127.0.0.1:8080
+│   └── src/
+│       ├── main.js
+│       ├── App.vue                   # 会话、任务列表、3s 轮询、结果面板编排
+│       ├── api.js                    # fetch 封装 + Bearer Token
+│       ├── style.css
+│       ├── components/
+│       │   ├── LoginPanel.vue        # 登录/注册
+│       │   ├── UploadPanel.vue       # 5MB 切片 + Web Worker MD5 + 3 并发 + 秒传/续传
+│       │   ├── TaskList.vue          # 任务列表与状态徽标
+│       │   └── ResultPanel.vue       # 摘要/要点/章节/逐字稿/预签名视频
+│       └── workers/
+│           └── md5.worker.js         # 大文件 MD5 增量计算 Worker
+├── jmeter/
+│   ├── dovideo-benchmark.jmx         # 异步RT/轮询/限流/同步对照 四组压测
+│   └── README.md                     # 压测运行说明
 └── server/                           # Spring Boot 3 后端工程（在 IDEA 中打开此目录）
     ├── pom.xml                       # Maven 依赖配置（含 spring-boot-starter-aop）
     └── src/
