@@ -1,5 +1,6 @@
 package com.dovideo.consumer;
 
+import com.dovideo.client.AiClientException;
 import com.dovideo.client.dto.SummaryResult;
 import com.dovideo.dto.AnalysisTaskMessage;
 import com.dovideo.entity.VideoTaskRecord;
@@ -19,10 +20,13 @@ import org.redisson.api.RedissonClient;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.startsWith;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -124,6 +128,28 @@ class VideoAnalysisConsumerTest {
         assertThrows(IllegalStateException.class, () -> consumer.onMessage(message()));
 
         verify(valueOperations).set(eq("video:status:" + MD5), eq("RETRYING"), any());
+        verify(lock).unlock();
+    }
+
+    @Test
+    void shouldMarkFailedDirectlyOnPermanentAiFailureWithoutMqRetry() {
+        when(lock.tryLock()).thenReturn(true);
+        when(lock.isHeldByCurrentThread()).thenReturn(true);
+        VideoTaskRecord task = task(TaskStatusEnum.UPLOADED.getCode());
+        when(taskRecordMapper.selectById(1L)).thenReturn(task);
+        when(transcriptionMapper.selectCount(any())).thenReturn(0L);
+        when(summaryMapper.selectCount(any())).thenReturn(0L);
+        when(audioExtractionService.transcribeFromMinio(anyString()))
+                .thenThrow(new AiClientException(
+                        "ASR 调用失败 httpStatus=402 body=balance insufficient", false, 402, null));
+        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+
+        // 不抛异常 = 直接 ACK，不再浪费 3 次 MQ 重投
+        consumer.onMessage(message());
+
+        assertEquals(TaskStatusEnum.FAILED.getCode(), task.getStatus());
+        assertTrue(task.getErrorMsg().contains("AI 服务调用失败"));
+        verify(valueOperations).set(eq("video:status:" + MD5), startsWith("FAILED:"), any());
         verify(lock).unlock();
     }
 

@@ -62,3 +62,9 @@
 pm install（35 包）+ 
 pm run build 成功（dist 88.82 kB JS / 2.62 kB CSS）；
 pm run dev 启动后 http://127.0.0.1:5173 返回 200，Vite /api 代理到后端 /api/health 返回 200。
+
+- **2026-11-04 [真实 Key 接入验证]**：
+  - 硅基流动 Key 验证：GET /v1/models 返回 200（99 个模型）；首次 POST /v1/audio/transcriptions（SenseVoiceSmall）成功返回 27 秒中文逐字稿；POST /v1/chat/completions（DeepSeek-V3）成功返回。
+  - 随后真实链路调用 ASR 时返回 HTTP 402 {"code":30001,"message":"Sorry, your account balance is insufficient"}，确认账户余额不足，需要充值后才能继续。
+  - FFmpeg 已安装（winget Gyan.FFmpeg 9.0.2），真实链路日志确认 fmpeg_extract_audio_success ... size=850138，音频提取正常。
+  - 改进：消费者新增永久性 AI 错误识别（401/402/403/400 等），直接置 FAILED 并 ACK，不再浪费 3 次 RocketMQ 重试；新增单测，全量 36/36 通过。

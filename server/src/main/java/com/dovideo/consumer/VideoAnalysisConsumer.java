@@ -1,5 +1,6 @@
 package com.dovideo.consumer;
 
+import com.dovideo.client.AiClientException;
 import com.dovideo.client.dto.SummaryResult;
 import com.dovideo.dto.AnalysisTaskMessage;
 import com.dovideo.entity.VideoTaskRecord;
@@ -101,7 +102,13 @@ public class VideoAnalysisConsumer implements RocketMQListener<AnalysisTaskMessa
             resultWriter.persist(task, transcript, summary);
             log.info("video_analysis_completed taskId={} videoMd5={}", taskId, videoMd5);
         } catch (Exception ex) {
-            // 不吞异常：标记 RETRYING 后向上抛出，交由 RocketMQ 阶梯延迟重投
+            // 永久性 AI 错误（401/402/403/400 等）：重投多少次都不会好，直接收敛为 FAILED，不再浪费 MQ 重试
+            if (isPermanentAiFailure(ex)) {
+                markPermanentFailure(taskId, videoMd5, ex.getMessage());
+                log.error("video_analysis_permanent_failure taskId={} videoMd5={}", taskId, videoMd5, ex);
+                return;
+            }
+            // 瞬时故障：标记 RETRYING 后向上抛出，交由 RocketMQ 阶梯延迟重投
             try {
                 redisTemplate.opsForValue().set(
                         AnalysisService.STATUS_KEY_PREFIX + videoMd5,
@@ -129,5 +136,47 @@ public class VideoAnalysisConsumer implements RocketMQListener<AnalysisTaskMessa
                         .eq(com.dovideo.entity.AiSummaryResult::getVideoMd5, videoMd5));
         return transcriptCount != null && transcriptCount > 0
                 && summaryCount != null && summaryCount > 0;
+    }
+
+    /**
+     * 沿 cause 链判断是否为「永久性 AI 错误」（429/5xx 之外的 4xx，例如 401 Key 错误、402 余额不足、403 无权限）。
+     * 这类错误重投多少次都不会成功，必须立即收敛，避免浪费 MQ 重试次数。
+     */
+    private boolean isPermanentAiFailure(Throwable ex) {
+        Throwable current = ex;
+        int depth = 0;
+        while (current != null && depth < 10) {
+            if (current instanceof AiClientException aiEx && !aiEx.isRetryable()) {
+                return true;
+            }
+            if (current.getCause() == current) {
+                break;
+            }
+            current = current.getCause();
+            depth++;
+        }
+        return false;
+    }
+
+    private void markPermanentFailure(Long taskId, String videoMd5, String reason) {
+        String message = "AI 服务调用失败：" + (reason == null ? "未知错误" : reason);
+        if (message.length() > 480) {
+            message = message.substring(0, 480);
+        }
+        try {
+            VideoTaskRecord task = taskRecordMapper.selectById(taskId);
+            if (task != null) {
+                task.setStatus(TaskStatusEnum.FAILED.getCode());
+                task.setErrorMsg(message);
+                task.setUpdateTime(LocalDateTime.now());
+                taskRecordMapper.updateById(task);
+            }
+            redisTemplate.opsForValue().set(
+                    AnalysisService.STATUS_KEY_PREFIX + videoMd5,
+                    AnalysisService.FAILED_PREFIX + message,
+                    AnalysisService.STATUS_TTL);
+        } catch (RuntimeException cacheEx) {
+            log.warn("video_analysis_permanent_failure_mark_failed_error taskId={}", taskId, cacheEx);
+        }
     }
 }
