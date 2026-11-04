@@ -68,3 +68,8 @@ pm run dev 启动后 http://127.0.0.1:5173 返回 200，Vite /api 代理到后�
   - 随后真实链路调用 ASR 时返回 HTTP 402 {"code":30001,"message":"Sorry, your account balance is insufficient"}，确认账户余额不足，需要充值后才能继续。
   - FFmpeg 已安装（winget Gyan.FFmpeg 9.0.2），真实链路日志确认 fmpeg_extract_audio_success ... size=850138，音频提取正常。
   - 改进：消费者新增永久性 AI 错误识别（401/402/403/400 等），直接置 FAILED 并 ACK，不再浪费 3 次 RocketMQ 重试；新增单测，全量 36/36 通过。
+
+- **2026-11-04 [真实 Key 全链路成功]**：
+  - 充值后重新验证：fmpeg_extract_audio_success（850KB）→ sr_transcribe_success chars=103（约 6.2s）→ llm_summarize_success keyPoints=4 chapters=3 tokens=683（约 8.9s）→ ideo_analysis_completed，taskId=3 状态 SUCCESS，端到端约 16s。
+  - 真实逐字稿存在同音字错误（遍利/右子数/递归站），DeepSeek 在总结中自动纠正为「遍历/右子树/递归栈」，体现 ASR + LLM 串联价值。
+  - 修复成功后 error_msg 残留问题：MyBatis-Plus updateById 默认忽略 null，改用 LambdaUpdateWrapper.set(error_msg, null) 显式清空；单测 36/36 通过。

@@ -2,6 +2,7 @@ package com.dovideo.service;
 
 import com.alibaba.fastjson2.JSON;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.dovideo.client.dto.SummaryResult;
 import com.dovideo.entity.AiSummaryResult;
 import com.dovideo.entity.VideoTaskRecord;
@@ -46,10 +47,17 @@ public class AnalysisResultWriter {
     }
 
     public void markTaskSuccess(VideoTaskRecord task) {
+        LocalDateTime now = LocalDateTime.now();
         task.setStatus(TaskStatusEnum.SUCCESS.getCode());
-        task.setUpdateTime(LocalDateTime.now());
+        task.setUpdateTime(now);
         task.setErrorMsg(null);
-        taskRecordMapper.updateById(task);
+        // MyBatis-Plus updateById 默认忽略 null 字段，无法把历史失败留下的 error_msg 清空，
+        // 因此这里用 LambdaUpdateWrapper 显式 set(error_msg, null)，保证成功后不再显示旧错误。
+        taskRecordMapper.update(null, new LambdaUpdateWrapper<VideoTaskRecord>()
+                .eq(VideoTaskRecord::getId, task.getId())
+                .set(VideoTaskRecord::getStatus, TaskStatusEnum.SUCCESS.getCode())
+                .set(VideoTaskRecord::getErrorMsg, null)
+                .set(VideoTaskRecord::getUpdateTime, now));
         redisTemplate.opsForValue().set(
                 STATUS_KEY_PREFIX + task.getVideoMd5(), SUCCESS, STATUS_TTL);
     }
