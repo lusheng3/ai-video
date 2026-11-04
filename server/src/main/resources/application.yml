@@ -36,7 +36,7 @@ rocketmq:
     retry-times-when-send-failed: 2
 
 app:
-  # 压测与本地零成本开发开关：开启后跳过外部付费 ASR/LLM，使用可配置模拟延迟返回标准数据
+  # 压测与本地零成本开发开关：开启后跳过外部付费 ASR/LLM 与 FFmpeg 调用，使用可配置模拟延迟返回标准数据
   mock-enabled: ${APP_MOCK_ENABLED:true}
   mock-process-delay-ms: ${APP_MOCK_DELAY_MS:1500}
   minio:
@@ -65,9 +65,22 @@ app:
     custom-dlq-topic: video-analysis-dlq-topic
     max-reconsume-times: 3
   ai:
-    base-url: ${SILICONFLOW_BASE_URL:https://api.siliconflow.cn/v1}
-    api-key: ${SILICONFLOW_API_KEY:demo-key}
-    asr-model: FunAudioLLM/SenseVoiceSmall
-    llm-model: deepseek-ai/DeepSeek-V3
     max-retries: 3
     initial-backoff-ms: 1000
+    ffmpeg-path: ${FFMPEG_PATH:ffmpeg}
+    # ============ 语音转写 ASR（任意 OpenAI 兼容 /audio/transcriptions 服务） ============
+    # 可选：硅基流动 SenseVoice / 阿里云 DashScope / 本地 faster-whisper 网关
+    asr:
+      base-url: ${ASR_BASE_URL:https://api.siliconflow.cn/v1}
+      api-key: ${ASR_API_KEY:demo-key}
+      model: ${ASR_MODEL:FunAudioLLM/SenseVoiceSmall}
+      language: zh
+    # ============ 结构化总结 LLM（任意 OpenAI 兼容 /chat/completions 服务） ============
+    # DeepSeek 官方：base-url=https://api.deepseek.com, model=deepseek-chat
+    # 硅基流动网关：base-url=https://api.siliconflow.cn/v1, model=deepseek-ai/DeepSeek-V3
+    llm:
+      base-url: ${LLM_BASE_URL:https://api.deepseek.com}
+      api-key: ${LLM_API_KEY:demo-key}
+      model: ${LLM_MODEL:deepseek-chat}
+      temperature: 0.3
+      max-tokens: 4096

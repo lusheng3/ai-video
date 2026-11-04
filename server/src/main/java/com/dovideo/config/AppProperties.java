@@ -55,13 +55,34 @@ public class AppProperties {
         private int maxReconsumeTimes = 3;
     }
 
+    /**
+     * AI 能力配置：ASR（语音转写）与 LLM（结构化总结）完全独立配置，
+     * 因此可以自由组合不同厂商，例如 ASR 用硅基流动 SenseVoice，LLM 用 DeepSeek 官方 API。
+     */
     @Data
     public static class AiProps {
-        private String baseUrl = "https://api.siliconflow.cn/v1";
-        private String apiKey = "demo-key";
-        private String asrModel = "FunAudioLLM/SenseVoiceSmall";
-        private String llmModel = "deepseek-ai/DeepSeek-V3";
         private int maxRetries = 3;
         private long initialBackoffMs = 1000L;
+        private String ffmpegPath = "ffmpeg";
+        private AsrProps asr = new AsrProps();
+        private LlmProps llm = new LlmProps();
+    }
+
+    @Data
+    public static class AsrProps {
+        private String baseUrl = "https://api.siliconflow.cn/v1";
+        private String apiKey = "demo-key";
+        private String model = "FunAudioLLM/SenseVoiceSmall";
+        private String language = "zh";
+    }
+
+    @Data
+    public static class LlmProps {
+        /** DeepSeek 官方 API 地址；若使用硅基流动网关则改为 https://api.siliconflow.cn/v1 */
+        private String baseUrl = "https://api.deepseek.com";
+        private String apiKey = "demo-key";
+        private String model = "deepseek-chat";
+        private double temperature = 0.3;
+        private int maxTokens = 4096;
     }
 }

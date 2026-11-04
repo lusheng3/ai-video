@@ -27,4 +27,13 @@
 - **2026-11-03 [步骤 5 完成]**：
   - 编写 `resources/lua/token_bucket.lua`：基于 Redis Hash（`tokens`、`last_time`）实现惰性令牌补充、判断与原子扣减，并设置 60s `EXPIRE` 回收冷数据。
   - 实现 `@RateLimit` 自定义注解与 `RateLimitAspect` AOP 切面，结合 `user_info.account_type` 自动区分普通用户（1个/秒，容量5）与付费VIP用户（5个/秒，容量20）配额，超限抛出 `BusinessException(ErrorCode.RATE_LIMITED)` 映射 HTTP 429。
-  - 通过 `RateLimitAspectTest` 单元测试（全量 17/17 通过，`mvn test` BUILD SUCCESS）。
+  - 支持 `@RateLimit(rate = 20.0, capacity = 50)` 按接口单独覆盖限流参数（注解参数化，切面无需改动）。
+  - 通过 `RateLimitAspectTest` 单元测试（全量 18/18 通过）。
+- **2026-11-04 [步骤 6 完成]**：
+  - 抽象 `AsrClient` / `LlmClient` 双接口，ASR 与 LLM 供应商完全解耦、独立配置（`app.ai.asr.*` 与 `app.ai.llm.*`）。
+  - 实现 `OpenAiCompatibleAsrClient`（/audio/transcriptions，默认硅基流动 SenseVoice）与 `OpenAiCompatibleLlmClient`（/chat/completions，默认 DeepSeek 官方 `deepseek-chat`）。
+  - 实现 `MockAsrClient` / `MockLlmClient`，受 `app.mock-enabled` 控制，支持零成本本地压测。
+  - 实现 `ExponentialBackoffRetry`：429/5xx/IO 异常按 `1s -> 2s -> 4s` 退避重试最多 3 次；400/401/403 等永久异常立即失败。
+  - 实现 `AudioExtractionService`：MinIO 下载视频 → FFmpeg 提取 16kHz 单声道 wav → `finally` 删除本地临时文件，保证服务无状态化；Mock 模式跳过 FFmpeg。
+  - 实现 `SummaryPromptBuilder` 四段式 Prompt + Few-Shot，强制输出严格 JSON。
+  - 通过 `ExponentialBackoffRetryTest` 与 `OpenAiCompatibleLlmClientTest`（MockWebServer 模拟 429/401/JSON 围栏）（全量 25/25 通过，`mvn test` BUILD SUCCESS）。
