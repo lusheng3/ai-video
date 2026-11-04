@@ -62,7 +62,7 @@ class RateLimitAspectTest {
         when(redisTemplate.execute(any(RedisScript.class), any(List.class), any(), any(), any(), any()))
                 .thenReturn(1L);
         when(joinPoint.proceed()).thenReturn("SUCCESS_RESPONSE");
-        RateLimit annotation = mockRateLimit("/api/analysis/submit");
+        RateLimit annotation = mockRateLimit("/api/analysis/submit", -1.0, -1);
 
         Object result = rateLimitAspect.around(joinPoint, annotation);
 
@@ -80,10 +80,29 @@ class RateLimitAspectTest {
     }
 
     @Test
+    void shouldUseCustomRateAndCapacityWhenSpecifiedOnAnnotation() throws Throwable {
+        when(redisTemplate.execute(any(RedisScript.class), any(List.class), any(), any(), any(), any()))
+                .thenReturn(1L);
+        when(joinPoint.proceed()).thenReturn("CHUNK_OK");
+        RateLimit annotation = mockRateLimit("/api/upload/chunk", 20.0, 50);
+
+        Object result = rateLimitAspect.around(joinPoint, annotation);
+
+        assertEquals("CHUNK_OK", result);
+        verify(redisTemplate).execute(
+                any(RedisScript.class),
+                any(List.class),
+                eq("20.0"),
+                eq("50"),
+                any(),
+                eq("60"));
+    }
+
+    @Test
     void shouldThrowRateLimited429WhenLuaTokenBucketReturnsZero() {
         when(redisTemplate.execute(any(RedisScript.class), any(List.class), any(), any(), any(), any()))
                 .thenReturn(0L);
-        RateLimit annotation = mockRateLimit("/api/analysis/submit");
+        RateLimit annotation = mockRateLimit("/api/analysis/submit", -1.0, -1);
 
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> rateLimitAspect.around(joinPoint, annotation));
@@ -92,9 +111,11 @@ class RateLimitAspectTest {
         assertEquals(429, ex.getErrorCode().getCode());
     }
 
-    private RateLimit mockRateLimit(String path) {
+    private RateLimit mockRateLimit(String path, double rate, int capacity) {
         RateLimit rateLimit = mock(RateLimit.class);
         when(rateLimit.apiPath()).thenReturn(path);
+        when(rateLimit.rate()).thenReturn(rate);
+        when(rateLimit.capacity()).thenReturn(capacity);
         return rateLimit;
     }
 }

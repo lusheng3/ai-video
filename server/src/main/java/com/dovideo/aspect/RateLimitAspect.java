@@ -65,13 +65,19 @@ public class RateLimitAspect {
         String subject = userIdAttr != null ? String.valueOf(userIdAttr) : "anonymous";
         boolean isVip = accountTypeAttr instanceof Integer type && type == AccountTypeEnum.VIP.getCode();
 
-        // 根据 user_info.account_type 区分免费用户与付费VIP用户的令牌速率与桶容量
-        double rate = isVip ? props.getVipUserRatePerSec() : props.getFreeUserRatePerSec();
-        int capacity = isVip ? props.getVipUserCapacity() : props.getFreeUserCapacity();
+        // 优先级：若注解上显式指定了 rate / capacity (> 0)，优先使用接口自定义参数；
+        // 否则按 user_info.account_type 使用全局免费/VIP默认配额（VIP用户还可在自定义参数基础上翻倍）
+        double baseRate = rateLimit.rate() > 0
+                ? rateLimit.rate()
+                : (isVip ? props.getVipUserRatePerSec() : props.getFreeUserRatePerSec());
+        int baseCapacity = rateLimit.capacity() > 0
+                ? rateLimit.capacity()
+                : (isVip ? props.getVipUserCapacity() : props.getFreeUserCapacity());
 
-        boolean allowed = tryAcquire(apiPath, subject, rate, capacity, props.getExpireSeconds());
+        boolean allowed = tryAcquire(apiPath, subject, baseRate, baseCapacity, props.getExpireSeconds());
         if (!allowed) {
-            log.warn("rate_limit_exceeded apiPath={} userId={} isVip={}", apiPath, subject, isVip);
+            log.warn("rate_limit_exceeded apiPath={} userId={} rate={} capacity={}",
+                    apiPath, subject, baseRate, baseCapacity);
             throw new BusinessException(ErrorCode.RATE_LIMITED, "当前请求过多，请稍后再试");
         }
 
