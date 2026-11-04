@@ -15,6 +15,7 @@ import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
 import okhttp3.ResponseBody;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -28,6 +29,7 @@ import java.nio.file.Path;
 @Slf4j
 @Component
 @RequiredArgsConstructor
+@ConditionalOnProperty(name = "app.mock-enabled", havingValue = "false")
 public class OpenAiCompatibleAsrClient implements AsrClient {
 
     private final OkHttpClient aiHttpClient;

@@ -44,3 +44,12 @@
   - 实现 `DeadLetterConsumer`：监听 `%DLQ%video-analysis-group`，将任务状态置为 `FAILED` 并写入错误原因，前端轮询可立刻感知。
   - 实现 `AnalysisController`：`POST /api/analysis/submit`（`@RateLimit(rate=1.0, capacity=5)`）、`GET /api/analysis/status/{taskId}`、`POST /api/analysis/sync-benchmark`（仅 Mock 模式，供 JMeter 同步/异步对比）。
   - 通过 `AnalysisServiceTest`、`VideoAnalysisConsumerTest`、`DeadLetterConsumerTest`（全量 35/35 通过，`mvn test` BUILD SUCCESS）。
+
+- **2026-11-04 [步骤 7 端到端运行验证]**：
+  - 启动 Docker 全量中间件（MySQL 13306 / Redis 16379 / MinIO 9000-9001 / RocketMQ NameServer 9876 + Broker 10911），应用 mvn spring-boot:run 启动成功，GET /api/health 返回 200。
+  - 运行时修复：RocketMQ Broker 初始 256m 堆内存不足导致 exit 253（提升为 1g）；命名卷挂载到 /home/rocketmq/store 因容器内 rocketmq(uid=3000) 无写权限导致 Broker 启动失败（开发环境改为不挂载持久卷）；ExponentialBackoffRetry 多构造器导致 Spring 无法实例化（标注 @Autowired）；Mock 与真实 AsrClient/LlmClient 同时注册导致 Bean 冲突（真实实现加 @ConditionalOnProperty(app.mock-enabled=false)）。
+  - 端到端冒烟测试通过：注册 → /upload/check（deduplicated=false）→ 3 个 5MB 分片上传 → /upload/merge（MinIO composeObject，taskId=1）→ /analysis/submit 返回 QUEUED → 3s 轮询 PROCESSING → SUCCESS；MySQL 中 ideo_task_record.status=3、ideo_transcription 135 字、i_summary_result 含 3 个 keyPoints 与 3 个 chapters。
+  - 秒传验证：同一 MD5 再次 /upload/check 返回 deduplicated=True, taskId=1。
+  - 异步 RT 验证：冷启动首次提交 268ms（含 MQ 路由首次发现与 JIT），热路径第二次提交 **52ms**。
+  - 令牌桶验证：连续 7 次提交，前 5 次 HTTP 200，第 6、7 次准确返回 HTTP 429（capacity=5, rate=1/s）。
+  - RocketMQ 消费日志确认：nalysis_mq_sent → ideo_analysis_completed，两个任务均成功消费。
