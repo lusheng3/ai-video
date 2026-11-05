@@ -1,6 +1,7 @@
 <script setup>
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { api, clearSession, getStoredUser, getToken } from './api'
+import { createTaskEventStreams } from './taskEvents'
 import LoginPanel from './components/LoginPanel.vue'
 import UploadPanel from './components/UploadPanel.vue'
 import TaskList from './components/TaskList.vue'
@@ -14,6 +15,7 @@ const error = ref('')
 const busyTaskId = ref(null)
 const toast = ref('')
 const pollingTimers = new Map()
+const analysisEvents = createTaskEventStreams()
 
 function showToast(message) {
   toast.value = message
@@ -45,6 +47,7 @@ function handleLoggedIn(auth) {
 
 function logout() {
   stopAllPolling()
+  analysisEvents.stopAll()
   clearSession()
   session.value = null
   tasks.value = []
@@ -62,6 +65,58 @@ function applyStatus(taskId, statusData) {
   if (!task) return
   task.status = statusData.status
   task.errorMsg = statusData.errorMsg
+  task.stageMessage = statusData.message
+  task.stageLabel = statusData.stageLabel || statusData.stage
+  task.progress = statusData.progress ?? task.progress
+}
+
+function applyEvent(taskId, event) {
+  const task = tasks.value.find((item) => item.id === taskId)
+  if (task) {
+    if (event.status != null) task.status = event.status
+    if (event.message) task.stageMessage = event.message
+    if (event.stageLabel) task.stageLabel = event.stageLabel
+    if (event.progress != null) task.progress = event.progress
+    if (event.errorMsg) task.errorMsg = event.errorMsg
+  }
+  if (detail.value?.taskId === taskId) {
+    if (event.status != null) detail.value.status = event.status
+    if (event.message) detail.value.message = event.message
+    if (event.progress != null) detail.value.progress = event.progress
+    if (event.errorMsg) detail.value.errorMsg = event.errorMsg
+  }
+}
+
+async function finishTask(taskId) {
+  analysisEvents.stop(taskId)
+  const timer = pollingTimers.get(taskId)
+  if (timer) {
+    clearInterval(timer)
+    pollingTimers.delete(taskId)
+  }
+  await loadTasks()
+  if (detail.value?.taskId === taskId) {
+    const task = tasks.value.find((item) => item.id === taskId)
+    if (task) await viewTask(task)
+  }
+}
+
+/**
+ * 优先用 SSE 实时接收阶段事件；连续重连失败或接口不可用时自动降级为 3 秒轮询。
+ */
+function watchTask(taskId) {
+  analysisEvents.start(taskId, {
+    onEvent(event) {
+      applyEvent(taskId, event)
+      if (event.status === 3 || event.status === 4) finishTask(taskId)
+    },
+    onFallback() {
+      startPolling(taskId)
+    },
+    onError() {
+      // 重连过程不打扰用户，降级后由轮询兜底
+    }
+  })
 }
 
 function startPolling(taskId) {
@@ -70,14 +125,7 @@ function startPolling(taskId) {
     try {
       const res = await api.analysisStatus(taskId)
       applyStatus(taskId, res.data)
-      if (res.data.status === 3 || res.data.status === 4) {
-        clearInterval(timer)
-        pollingTimers.delete(taskId)
-        if (detail.value?.taskId === taskId) {
-          const task = tasks.value.find((item) => item.id === taskId)
-          if (task) await viewTask(task)
-        }
-      }
+      if (res.data.status === 3 || res.data.status === 4) finishTask(taskId)
     } catch {
       // 网络抖动时保持轮询，等待下一次
     }
@@ -93,8 +141,10 @@ async function analyze(task) {
   try {
     const res = await api.submitAnalysis({ taskId: task.id, userGoal: goal.trim() })
     task.status = res.data.status
+    task.stageMessage = res.data.message
+    task.progress = 0
     showToast(res.data.message)
-    startPolling(task.id)
+    watchTask(task.id)
     await loadTasks()
   } catch (e) {
     error.value = e.message
@@ -131,11 +181,14 @@ onMounted(async () => {
   if (!getToken()) return
   await loadTasks()
   for (const task of tasks.value) {
-    if (task.status === 1 || task.status === 2) startPolling(task.id)
+    if (task.status === 1 || task.status === 2) watchTask(task.id)
   }
 })
 
-onBeforeUnmount(stopAllPolling)
+onBeforeUnmount(() => {
+  stopAllPolling()
+  analysisEvents.stopAll()
+})
 </script>
 
 <template>

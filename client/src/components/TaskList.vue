@@ -56,6 +56,21 @@ function canAnalyze(task) {
             taskId={{ task.id }} · {{ formatSize(task.totalSize) }} · {{ task.totalChunks }} 片
           </div>
           <div class="mono">md5={{ task.videoMd5 }}</div>
+          <div
+            v-if="task.stageMessage && (task.status === 1 || task.status === 2)"
+            class="muted"
+            style="margin-top: 6px"
+          >
+            {{ task.stageMessage }}
+            <span v-if="task.progress != null">（{{ task.progress }}%）</span>
+          </div>
+          <div
+            v-if="(task.status === 1 || task.status === 2) && task.progress != null"
+            class="progress"
+            style="margin-top: 6px; max-width: 320px"
+          >
+            <div :style="{ width: Math.min(100, Math.max(0, task.progress)) + '%' }"></div>
+          </div>
           <div v-if="task.errorMsg" class="error" style="margin-top: 6px">{{ task.errorMsg }}</div>
         </div>
 

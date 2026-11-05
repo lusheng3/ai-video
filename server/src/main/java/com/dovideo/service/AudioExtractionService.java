@@ -4,6 +4,7 @@ import com.dovideo.client.AsrClient;
 import com.dovideo.client.LlmClient;
 import com.dovideo.client.dto.SummaryResult;
 import com.dovideo.config.AppProperties;
+import com.dovideo.enums.AnalysisStageEnum;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -46,9 +47,25 @@ public class AudioExtractionService {
     private final LlmClient llmClient;
 
     /**
-     * 从 MinIO 对象中提取音频、分段转写，返回带时间范围的完整逐字稿
+     * 转写进度回调：让音视频处理层只关心「当前第几段」，
+     * 由消费者负责把阶段事件推给前端，避免处理层直接依赖 SSE/Redis。
+     */
+    @FunctionalInterface
+    public interface ProgressListener {
+        void onProgress(AnalysisStageEnum stage, String message, Integer progress);
+    }
+
+    /**
+     * 兼容旧调用：不关心进度时保持原签名。
      */
     public String transcribeFromMinio(String objectKey) {
+        return transcribeFromMinio(objectKey, null);
+    }
+
+    /**
+     * 从 MinIO 对象中提取音频、分段转写，并在关键节点回调进度。
+     */
+    public String transcribeFromMinio(String objectKey, ProgressListener listener) {
         Path videoTemp = null;
         Path audioDir = null;
         try {
@@ -59,6 +76,7 @@ public class AudioExtractionService {
 
             // 压测/本地开发模式：跳过 FFmpeg 与分段，直接返回 Mock 逐字稿
             if (appProperties.isMockEnabled()) {
+                report(listener, AnalysisStageEnum.ASR, "Mock 模式正在生成逐字稿", 30);
                 Path mockAudio = Files.createTempFile("dovideo-audio-", ".wav");
                 Files.writeString(mockAudio, "mock-audio");
                 try {
@@ -73,6 +91,8 @@ public class AudioExtractionService {
             List<Path> segments = splitAudio(videoTemp, audioDir);
             log.info("audio_segmented video={} durationSeconds={} segments={}",
                     objectKey, durationSeconds, segments.size());
+            report(listener, AnalysisStageEnum.AUDIO_SEGMENTED,
+                    "音频已切分为 " + segments.size() + " 段，开始逐段转写", 20);
 
             StringBuilder transcript = new StringBuilder();
             int segmentSeconds = appProperties.getAi().getAsrSegmentSeconds();
@@ -81,6 +101,9 @@ public class AudioExtractionService {
                 double end = durationSeconds > 0
                         ? Math.min(start + segmentSeconds, durationSeconds)
                         : start + segmentSeconds;
+                int progress = 20 + (int) Math.round(58.0 * index / segments.size());
+                report(listener, AnalysisStageEnum.ASR,
+                        "正在转写第 " + (index + 1) + "/" + segments.size() + " 段音频", progress);
                 String part = asrClient.transcribe(segments.get(index));
                 if (part == null || part.isBlank()) {
                     continue;
@@ -204,6 +227,21 @@ public class AudioExtractionService {
             return "";
         }
         return text.length() > 500 ? text.substring(0, 500) + "..." : text;
+    }
+
+    private void report(ProgressListener listener,
+                        AnalysisStageEnum stage,
+                        String message,
+                        Integer progress) {
+        if (listener == null) {
+            return;
+        }
+        try {
+            listener.onProgress(stage, message, progress);
+        } catch (RuntimeException ex) {
+            // 进度推送失败不能影响主流程（转写与总结才是任务本身）
+            log.warn("audio_progress_report_failed stage={} reason={}", stage, ex.getMessage());
+        }
     }
 
     private void deleteQuietly(Path path) {

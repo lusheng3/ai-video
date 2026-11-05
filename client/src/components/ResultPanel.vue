@@ -15,6 +15,14 @@ const emit = defineEmits(['close'])
 
     <div v-if="detail.status !== 3" class="muted">
       {{ detail.message || '任务尚未完成' }}
+      <span v-if="detail.progress != null">（{{ detail.progress }}%）</span>
+      <div
+        v-if="detail.progress != null"
+        class="progress"
+        style="margin-top: 8px; max-width: 420px"
+      >
+        <div :style="{ width: Math.min(100, Math.max(0, detail.progress)) + '%' }"></div>
+      </div>
     </div>
 
     <template v-else>

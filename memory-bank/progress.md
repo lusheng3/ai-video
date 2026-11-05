@@ -77,5 +77,18 @@ pm run dev 启动后 http://127.0.0.1:5173 返回 200，Vite /api 代理到后�
 - **2026-11-05 [前端弱网上传改造]**：
   - 真实 1.63GB 文件上传时，分片 167 经 Vite 代理连 8080 出现 connect ETIMEDOUT，Promise.all 整批 reject，页面显示 Failed to fetch；Redis Set 已保存 333/335 片（缺 167、222），证明断点数据安全。
   - 重构 UploadPanel.vue：分片级状态 + 单分片自动重试 3 次（1s→2s→4s + jitter）+ 60s AbortController 超时 + 错误分类（401/403/400 永久失败，408/429/5xx/网络可重试）+ worker 失败不中断整批 + 批次结束 /check 服务端对账 + 仅全部分片就绪才 merge + PARTIAL_FAILED 状态与失败分片列表 + merge 409/网络重试。
-  - pi.js 支持传入 AbortSignal；
-pm run build 通过（93.70 kB JS）。
+  - api.js 支持传入 AbortSignal；
+  - npm run build 通过（93.70 kB JS）。
+
+- **2026-11-05 [长视频分段 ASR]**：
+  - `AudioExtractionService` 按 `app.ai.asr-segment-seconds`（默认 300s）FFmpeg 切段，逐段调用 ASR 后拼接为带 `[start-end]` 时间范围的完整逐字稿，规避单文件大小上限并支持单段失败重试。
+  - 真实 1.63GB / 2964.7s（约 49 分钟）视频验证：切 10 段、ASR 10 段全部成功，tokenCost=7877，keyPoints=5、chapters=7。
+
+- **2026-11-05 [方案 B：SSE 实时进度 + 3s 轮询降级]**：
+  - 后端新增 `AnalysisStageEnum`（QUEUED/CONSUMING/AUDIO_EXTRACTING/AUDIO_SEGMENTED/ASR/LLM/PERSISTING/COMPLETED/REUSED/RETRYING/FAILED）、`AnalysisEvent`、`TaskEventService`、`TaskEventRedisConfig`；`AnalysisStatusResponse` 增加 `stage/stageLabel/progress`。
+  - 事件链路：消费者每进入一个阶段 `publishStage` → 先写 Redis 快照 `video:stage:{taskId}`（TTL 1h）→ `PUBLISH dovideo:task-events` → 各实例 `RedisMessageListenerContainer` 收到后投递给本机 `SseEmitter`，因此水平扩容后浏览器连任意实例都能收到事件。
+  - `GET /api/analysis/events/{taskId}`（`text/event-stream`）：先注册订阅再补发首帧快照，避免「查状态与建连接之间任务刚好完成」丢终态；终态事件发送后立即关闭连接。
+  - 提交顺序：先发 `QUEUED` 再投递 MQ，防止消费者抢先 `CONSUMING` 导致进度回退；MQ 投递失败时 `clearStage` 清理快照；消费者失败/重试/死信均发布对应终态或 `RETRYING` 事件。
+  - 前端 `taskEvents.js`：因 `EventSource` 不能携带 `Authorization`，改用 `fetch` 读取事件流；断线指数退避 1s→2s→4s→8s→15s，连续 5 次失败或接口 404/405 时降级为 3s 轮询；401/403 直接终态报错。`TaskList.vue`/`ResultPanel.vue` 展示阶段文案与进度条。
+  - 文档：`docs/api-contract.md` 新增 3.3 SSE 事件流与阶段表，3.2 轮询补充 `stage/progress`。
+  - 验证：`mvn test` 全量 **40/40** 通过；已完成任务订阅 SSE 收到 `COMPLETED` 快照后连接立即关闭；真实任务订阅中实时收到 `ASR(59%) → LLM(78%) → PERSISTING(92%) → COMPLETED(100%)`；Redis 快照 TTL 实测 3591s；前端 `npm run build` 通过（97.57 kB JS）。

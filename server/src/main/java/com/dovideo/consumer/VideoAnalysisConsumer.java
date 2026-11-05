@@ -4,6 +4,7 @@ import com.dovideo.client.AiClientException;
 import com.dovideo.client.dto.SummaryResult;
 import com.dovideo.dto.AnalysisTaskMessage;
 import com.dovideo.entity.VideoTaskRecord;
+import com.dovideo.enums.AnalysisStageEnum;
 import com.dovideo.enums.TaskStatusEnum;
 import com.dovideo.mapper.AiSummaryResultMapper;
 import com.dovideo.mapper.VideoTaskRecordMapper;
@@ -11,6 +12,7 @@ import com.dovideo.mapper.VideoTranscriptionMapper;
 import com.dovideo.service.AnalysisResultWriter;
 import com.dovideo.service.AnalysisService;
 import com.dovideo.service.AudioExtractionService;
+import com.dovideo.service.TaskEventService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.spring.annotation.RocketMQMessageListener;
@@ -50,6 +52,7 @@ public class VideoAnalysisConsumer implements RocketMQListener<AnalysisTaskMessa
     private final AudioExtractionService audioExtractionService;
     private final AnalysisResultWriter resultWriter;
     private final StringRedisTemplate redisTemplate;
+    private final TaskEventService taskEventService;
 
     @Override
     public void onMessage(AnalysisTaskMessage msg) {
@@ -75,18 +78,22 @@ public class VideoAnalysisConsumer implements RocketMQListener<AnalysisTaskMessa
             VideoTaskRecord task = taskRecordMapper.selectById(taskId);
             if (task == null) {
                 log.warn("video_analysis_task_not_found taskId={}", taskId);
+                taskEventService.publishStage(taskId, AnalysisStageEnum.FAILED, "视频任务不存在", 0);
                 return;
             }
 
             // ===== 步骤4：二次幂等校验 =====
             if (task.getStatus() != null && task.getStatus() == TaskStatusEnum.SUCCESS.getCode()) {
                 log.info("video_analysis_already_success taskId={} videoMd5={}", taskId, videoMd5);
+                taskEventService.publishStage(taskId, AnalysisStageEnum.COMPLETED, "分析已完成", 100);
                 return;
             }
             if (hasExistingResult(videoMd5)) {
                 // 同一内容的另一个任务已经分析完成：串行重复场景，直接复用结果，绝不再烧一次算力
                 log.info("video_analysis_reuse_existing_result taskId={} videoMd5={}", taskId, videoMd5);
                 resultWriter.markTaskSuccess(task);
+                taskEventService.publishStage(
+                        taskId, AnalysisStageEnum.REUSED, "命中已有分析结果，直接复用", 100);
                 return;
             }
 
@@ -94,12 +101,25 @@ public class VideoAnalysisConsumer implements RocketMQListener<AnalysisTaskMessa
             task.setStatus(TaskStatusEnum.PROCESSING.getCode());
             task.setUpdateTime(LocalDateTime.now());
             taskRecordMapper.updateById(task);
+            taskEventService.publishStage(
+                    taskId, AnalysisStageEnum.CONSUMING, "消费者已接手，正在下载视频", 5);
 
-            String transcript = audioExtractionService.transcribeFromMinio(msg.getMinioPath());
+            taskEventService.publishStage(
+                    taskId, AnalysisStageEnum.AUDIO_EXTRACTING, "正在下载视频并提取音频", 10);
+            String transcript = audioExtractionService.transcribeFromMinio(
+                    msg.getMinioPath(),
+                    (stage, message, progress) ->
+                            taskEventService.publishStage(taskId, stage, message, progress));
+
+            taskEventService.publishStage(
+                    taskId, AnalysisStageEnum.LLM, "正在生成结构化总结", 78);
             SummaryResult summary = audioExtractionService.analyzeTranscript(transcript, msg.getUserGoal());
 
             // ===== 步骤6：唯一索引兜底落库 + 更新 SUCCESS =====
+            taskEventService.publishStage(
+                    taskId, AnalysisStageEnum.PERSISTING, "正在保存逐字稿与结构化结果", 92);
             resultWriter.persist(task, transcript, summary);
+            taskEventService.publishStage(taskId, AnalysisStageEnum.COMPLETED, "分析完成", 100);
             log.info("video_analysis_completed taskId={} videoMd5={}", taskId, videoMd5);
         } catch (Exception ex) {
             // 永久性 AI 错误（401/402/403/400 等）：重投多少次都不会好，直接收敛为 FAILED，不再浪费 MQ 重试
@@ -114,6 +134,9 @@ public class VideoAnalysisConsumer implements RocketMQListener<AnalysisTaskMessa
                         AnalysisService.STATUS_KEY_PREFIX + videoMd5,
                         AnalysisService.RETRYING,
                         AnalysisService.STATUS_TTL);
+                taskEventService.publishStage(
+                        taskId, AnalysisStageEnum.RETRYING,
+                        "本次执行失败，正在等待消息队列自动重试", 0);
             } catch (RuntimeException redisEx) {
                 log.warn("video_analysis_retry_status_write_failed videoMd5={}", videoMd5, redisEx);
             }
@@ -175,6 +198,8 @@ public class VideoAnalysisConsumer implements RocketMQListener<AnalysisTaskMessa
                     AnalysisService.STATUS_KEY_PREFIX + videoMd5,
                     AnalysisService.FAILED_PREFIX + message,
                     AnalysisService.STATUS_TTL);
+            taskEventService.publishStage(
+                    taskId, AnalysisStageEnum.FAILED, message, 0, message);
         } catch (RuntimeException cacheEx) {
             log.warn("video_analysis_permanent_failure_mark_failed_error taskId={}", taskId, cacheEx);
         }

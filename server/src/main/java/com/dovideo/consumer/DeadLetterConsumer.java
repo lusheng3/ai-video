@@ -2,9 +2,11 @@ package com.dovideo.consumer;
 
 import com.dovideo.dto.AnalysisTaskMessage;
 import com.dovideo.entity.VideoTaskRecord;
+import com.dovideo.enums.AnalysisStageEnum;
 import com.dovideo.enums.TaskStatusEnum;
 import com.dovideo.mapper.VideoTaskRecordMapper;
 import com.dovideo.service.AnalysisService;
+import com.dovideo.service.TaskEventService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.spring.annotation.RocketMQMessageListener;
@@ -30,6 +32,7 @@ public class DeadLetterConsumer implements RocketMQListener<AnalysisTaskMessage>
 
     private final VideoTaskRecordMapper taskRecordMapper;
     private final StringRedisTemplate redisTemplate;
+    private final TaskEventService taskEventService;
 
     @Override
     public void onMessage(AnalysisTaskMessage msg) {
@@ -52,5 +55,7 @@ public class DeadLetterConsumer implements RocketMQListener<AnalysisTaskMessage>
                     AnalysisService.STATUS_TTL);
         }
         log.error("dead_letter_task_marked_failed taskId={} videoMd5={}", msg.getTaskId(), msg.getVideoMd5());
+        taskEventService.publishStage(
+                msg.getTaskId(), AnalysisStageEnum.FAILED, errorMsg, 0, errorMsg);
     }
 }

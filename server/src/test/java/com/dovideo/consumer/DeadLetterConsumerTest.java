@@ -4,6 +4,7 @@ import com.dovideo.dto.AnalysisTaskMessage;
 import com.dovideo.entity.VideoTaskRecord;
 import com.dovideo.enums.TaskStatusEnum;
 import com.dovideo.mapper.VideoTaskRecordMapper;
+import com.dovideo.service.TaskEventService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -24,6 +25,7 @@ class DeadLetterConsumerTest {
     @Mock private VideoTaskRecordMapper taskRecordMapper;
     @Mock private StringRedisTemplate redisTemplate;
     @Mock private ValueOperations<String, String> valueOperations;
+    @Mock private TaskEventService taskEventService;
 
     @Test
     void shouldMarkTaskFailedAndWriteRedisFailureReason() {
@@ -31,7 +33,7 @@ class DeadLetterConsumerTest {
         when(taskRecordMapper.selectById(9L)).thenReturn(task);
         when(redisTemplate.opsForValue()).thenReturn(valueOperations);
 
-        new DeadLetterConsumer(taskRecordMapper, redisTemplate).onMessage(
+        new DeadLetterConsumer(taskRecordMapper, redisTemplate, taskEventService).onMessage(
                 AnalysisTaskMessage.builder().taskId(9L).videoMd5("abc").build());
 
         assertEquals(TaskStatusEnum.FAILED.getCode(), task.getStatus());

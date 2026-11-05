@@ -19,8 +19,9 @@ DOVideo-AI-v2/
 │   ├── vite.config.js                # /api 代理到 http://127.0.0.1:8080
 │   └── src/
 │       ├── main.js
-│       ├── App.vue                   # 会话、任务列表、3s 轮询、结果面板编排
+│       ├── App.vue                   # 会话、任务列表、SSE 订阅 + 轮询降级、结果面板编排
 │       ├── api.js                    # fetch 封装 + Bearer Token
+│       ├── taskEvents.js             # SSE fetch 客户端：断线指数退避重连 + 降级通知
 │       ├── style.css
 │       ├── components/
 │       │   ├── LoginPanel.vue        # 登录/注册
@@ -64,12 +65,13 @@ DOVideo-AI-v2/
         │   │   │   ├── AuthInterceptor.java             # Redis Token 登录鉴权拦截器
         │   │   │   ├── MinioConfig.java                 # MinioClient Bean 初始化配置
         │   │   │   ├── AiClientConfig.java              # OkHttpClient（AI 调用专用超时配置）
+        │   │   │   ├── TaskEventRedisConfig.java        # 订阅 dovideo:task-events，向本实例 SseEmitter 转发
         │   │   │   └── WebMvcConfig.java                # 拦截器注册与跨域配置
         │   │   ├── controller/                          # 【控制层 Controller】
         │   │   │   ├── HealthController.java            # 健康检查接口 (/api/health)
         │   │   │   ├── UserController.java              # 用户注册/登录/退出接口 (/api/user/*)
         │   │   │   ├── UploadController.java            # 分片预检/上传/合并/预签名播放/列表 (/api/upload/*, /api/media/*)
-        │   │   │   └── AnalysisController.java          # 异步分析提交/3s轮询/同步对照组 (/api/analysis/*)
+        │   │   │   └── AnalysisController.java          # 异步分析提交/SSE 事件流/3s降级轮询/同步对照组
         │   │   ├── consumer/                            # 【RocketMQ 消费者层】
         │   │   │   ├── VideoAnalysisConsumer.java       # 标准六步流程 + WatchDog 锁 + 唯一索引兜底
         │   │   │   └── DeadLetterConsumer.java          # 死信队列兜底：置 FAILED 并写 Redis 失败原因
@@ -78,8 +80,9 @@ DOVideo-AI-v2/
         │   │   │   ├── MinioService.java                # MinIO 私有桶、Lifecycle规则、composeObject合并、预签名URL
         │   │   │   ├── UploadService.java               # 秒传预检、Redis Set 断点续传、先落盘后记账、合并锁与 composeObject
         │   │   │   ├── UploadReconciliationJob.java     # 后台定时校准卡在“合并中(status=5)”的任务，保障最终一致性
-        │   │   │   ├── AudioExtractionService.java      # MinIO 下载 + FFmpeg 提取 16kHz 音频 + 临时文件清理
-        │   │   │   ├── AnalysisService.java             # 前置状态拦截 + MQ 同步投递 + 3s 轮询状态聚合 + 同步对照组
+        │   │   │   ├── AudioExtractionService.java      # MinIO 下载 + FFmpeg 分段 + 逐段 ASR（可回调进度）
+        │   │   │   ├── AnalysisService.java             # 前置状态拦截 + MQ 同步投递 + 阶段快照/降级轮询聚合 + 同步对照组
+        │   │   │   ├── TaskEventService.java            # SSE 订阅表 + Redis Pub/Sub 广播 + video:stage 快照读写
         │   │   │   └── AnalysisResultWriter.java        # 逐字稿/总结落库（唯一索引兜底）+ 更新 SUCCESS + Redis 缓存
         │   │   ├── mapper/                              # 【持久层 DAO / Mapper】
         │   │   │   ├── UserInfoMapper.java              # 用户主表 Mapper
@@ -99,10 +102,12 @@ DOVideo-AI-v2/
         │   │   │   ├── UploadMergeResponse.java         # /upload/merge 响应体
         │   │   │   ├── AnalysisSubmitRequest.java       # /analysis/submit 请求体
         │   │   │   ├── AnalysisSubmitResponse.java      # /analysis/submit 响应体
-        │   │   │   ├── AnalysisStatusResponse.java      # /analysis/status 响应体（含逐字稿+结构化总结）
+        │   │   │   ├── AnalysisStatusResponse.java      # /analysis/status 响应体（阶段/进度 + 逐字稿 + 结构化总结）
+        │   │   │   ├── AnalysisEvent.java               # SSE 与降级轮询共用的事件载荷（含 terminal() 终态判断）
         │   │   │   └── AnalysisTaskMessage.java         # 投递到 RocketMQ 的轻量消息体
         │   │   ├── enums/                               # 【业务状态机枚举层】
         │   │   │   ├── AccountTypeEnum.java             # 0-免费用户，1-付费VIP
+        │   │   │   ├── AnalysisStageEnum.java           # 细粒度阶段：QUEUED/ASR/LLM/PERSISTING/COMPLETED/FAILED...
         │   │   │   └── TaskStatusEnum.java              # 0-待分析，1-排队中，2-处理中，3-已完成，4-失败，5-合并中
         │   │   └── exception/                           # 【异常处理层】
         │   │       ├── BusinessException.java
@@ -119,6 +124,8 @@ DOVideo-AI-v2/
                 │   └── RateLimitAspectTest.java         # 令牌桶 Lua 切面单元测试
                 ├── client/impl/
                 │   └── OpenAiCompatibleLlmClientTest.java # MockWebServer 模拟 429重试/401不重试/JSON围栏
+                ├── enums/
+                │   └── AnalysisStageEnumTest.java       # 阶段→状态码/进度映射 与终态判定
                 ├── exception/
                 │   └── GlobalExceptionHandlerTest.java
                 ├── util/

@@ -163,13 +163,22 @@
 - 超过令牌桶容量返回 **HTTP 429**。
 - MQ 投递失败会回滚状态并返回 **HTTP 503**。
 
-### 3.2 查询状态（前端 3 秒轮询）
+### 3.2 查询状态（SSE 不可用时的降级轮询）
 `GET /api/analysis/status/{taskId}`
 
-处理中：
+处理中（`stage` / `progress` 与 SSE 事件同源，轮询也能显示细粒度进度）：
 
 ```json
-{ "taskId": 1, "videoMd5": "385a...", "status": 2, "statusLabel": "PROCESSING", "message": "正在提取音频并调用 AI 分析" }
+{
+  "taskId": 1,
+  "videoMd5": "385a...",
+  "status": 2,
+  "statusLabel": "PROCESSING",
+  "stage": "ASR",
+  "stageLabel": "正在逐段语音转写",
+  "message": "正在转写第 3/10 段音频",
+  "progress": 32
+}
 ```
 
 完成：
@@ -180,6 +189,8 @@
   "videoMd5": "385a...",
   "status": 3,
   "statusLabel": "SUCCESS",
+  "stage": "COMPLETED",
+  "progress": 100,
   "message": "分析完成",
   "transcription": "00:00 大家好...",
   "summary": {
@@ -195,7 +206,33 @@
 
 失败：`status=4`，返回 `errorMsg`。
 
-### 3.3 同步对照组（仅 Mock 模式）
+### 3.3 实时事件流（SSE）
+`GET /api/analysis/events/{taskId}`，Header 需 `Authorization: Bearer <token>`，`Accept: text/event-stream`。
+
+订阅成功后服务端先补发一帧当前快照，随后推送阶段事件；终态事件发送完立即关闭连接：
+
+```text
+event: task-status
+data: {"taskId":1,"status":2,"statusLabel":"PROCESSING","stage":"ASR","stageLabel":"正在逐段语音转写","message":"正在转写第 3/10 段音频","progress":32,"errorMsg":null,"timestamp":1762300000000}
+```
+
+| stage | 含义 | 默认 progress |
+|---|---|---|
+| `QUEUED` | 已投递 MQ，等待消费 | 0 |
+| `CONSUMING` | 消费者已接手 | 5 |
+| `AUDIO_EXTRACTING` | 下载视频 + FFmpeg 提取音频 | 10 |
+| `AUDIO_SEGMENTED` | 音频分段完成 | 20 |
+| `ASR` | 逐段转写（message 含 `第 i/N 段`） | 30 |
+| `LLM` | 生成结构化总结 | 78 |
+| `PERSISTING` | 落库保存 | 92 |
+| `COMPLETED` / `REUSED` | 终态：完成 | 100 |
+| `RETRYING` | 本次失败，等待 MQ 重投 | 0 |
+| `FAILED` | 终态：失败 | 0 |
+
+- 事件先写 Redis `video:stage:{taskId}`（TTL 1h）作为快照，再通过 Redis Pub/Sub `dovideo:task-events` 广播到所有实例。
+- 前端断线重连后由首帧快照补齐状态；连续重连失败时自动降级为 3 秒轮询。
+
+### 3.4 同步对照组（仅 Mock 模式）
 `POST /api/analysis/sync-benchmark?taskId=1&userGoal=...`
 
 返回 `{ "taskId": 1, "elapsedMs": 3005, "mode": "SYNC_BLOCKING" }`，用于 JMeter 对比同步阻塞与异步 50ms。

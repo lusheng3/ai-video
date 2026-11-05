@@ -10,6 +10,7 @@ import com.dovideo.mapper.VideoTaskRecordMapper;
 import com.dovideo.mapper.VideoTranscriptionMapper;
 import com.dovideo.service.AnalysisResultWriter;
 import com.dovideo.service.AudioExtractionService;
+import com.dovideo.service.TaskEventService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -45,6 +46,7 @@ class VideoAnalysisConsumerTest {
     @Mock private AnalysisResultWriter resultWriter;
     @Mock private StringRedisTemplate redisTemplate;
     @Mock private ValueOperations<String, String> valueOperations;
+    @Mock private TaskEventService taskEventService;
 
     private VideoAnalysisConsumer consumer;
 
@@ -52,7 +54,7 @@ class VideoAnalysisConsumerTest {
     void setUp() {
         consumer = new VideoAnalysisConsumer(
                 redissonClient, taskRecordMapper, transcriptionMapper, summaryMapper,
-                audioExtractionService, resultWriter, redisTemplate);
+                audioExtractionService, resultWriter, redisTemplate, taskEventService);
         when(redissonClient.getLock("lock:video:" + MD5)).thenReturn(lock);
     }
 
@@ -74,7 +76,7 @@ class VideoAnalysisConsumerTest {
 
         consumer.onMessage(message());
 
-        verify(audioExtractionService, never()).transcribeFromMinio(anyString());
+        verify(audioExtractionService, never()).transcribeFromMinio(anyString(), any());
         verify(lock).unlock();
     }
 
@@ -90,7 +92,7 @@ class VideoAnalysisConsumerTest {
         consumer.onMessage(message());
 
         verify(resultWriter).markTaskSuccess(task);
-        verify(audioExtractionService, never()).transcribeFromMinio(anyString());
+        verify(audioExtractionService, never()).transcribeFromMinio(anyString(), any());
         verify(lock).unlock();
     }
 
@@ -102,7 +104,7 @@ class VideoAnalysisConsumerTest {
         when(taskRecordMapper.selectById(1L)).thenReturn(task);
         when(transcriptionMapper.selectCount(any())).thenReturn(0L);
         when(summaryMapper.selectCount(any())).thenReturn(0L);
-        when(audioExtractionService.transcribeFromMinio("videos/" + MD5 + "/course.mp4"))
+        when(audioExtractionService.transcribeFromMinio(eq("videos/" + MD5 + "/course.mp4"), any()))
                 .thenReturn("逐字稿内容");
         SummaryResult summary = SummaryResult.builder().summary("总结").build();
         when(audioExtractionService.analyzeTranscript("逐字稿内容", "总结重点")).thenReturn(summary);
@@ -121,7 +123,7 @@ class VideoAnalysisConsumerTest {
         when(taskRecordMapper.selectById(1L)).thenReturn(task);
         when(transcriptionMapper.selectCount(any())).thenReturn(0L);
         when(summaryMapper.selectCount(any())).thenReturn(0L);
-        when(audioExtractionService.transcribeFromMinio(anyString()))
+        when(audioExtractionService.transcribeFromMinio(anyString(), any()))
                 .thenThrow(new IllegalStateException("ASR 超时"));
         when(redisTemplate.opsForValue()).thenReturn(valueOperations);
 
@@ -139,7 +141,7 @@ class VideoAnalysisConsumerTest {
         when(taskRecordMapper.selectById(1L)).thenReturn(task);
         when(transcriptionMapper.selectCount(any())).thenReturn(0L);
         when(summaryMapper.selectCount(any())).thenReturn(0L);
-        when(audioExtractionService.transcribeFromMinio(anyString()))
+        when(audioExtractionService.transcribeFromMinio(anyString(), any()))
                 .thenThrow(new AiClientException(
                         "ASR 调用失败 httpStatus=402 body=balance insufficient", false, 402, null));
         when(redisTemplate.opsForValue()).thenReturn(valueOperations);

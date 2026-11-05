@@ -45,6 +45,7 @@ class AnalysisServiceTest {
     @Mock private ValueOperations<String, String> valueOperations;
     @Mock private AudioExtractionService audioExtractionService;
     @Mock private AnalysisResultWriter resultWriter;
+    @Mock private TaskEventService taskEventService;
 
     private AppProperties appProperties;
     private AnalysisService analysisService;
@@ -55,7 +56,7 @@ class AnalysisServiceTest {
         analysisService = new AnalysisService(
                 taskRecordMapper, transcriptionMapper, summaryMapper,
                 rocketMQTemplate, redisTemplate, audioExtractionService,
-                resultWriter, appProperties);
+                resultWriter, appProperties, taskEventService);
     }
 
     @Test
