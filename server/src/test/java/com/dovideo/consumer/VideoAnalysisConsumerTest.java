@@ -2,15 +2,21 @@ package com.dovideo.consumer;
 
 import com.dovideo.client.AiClientException;
 import com.dovideo.client.dto.SummaryResult;
+import com.dovideo.config.AppProperties;
 import com.dovideo.dto.AnalysisTaskMessage;
+import com.dovideo.entity.AiSummaryResult;
 import com.dovideo.entity.VideoTaskRecord;
+import com.dovideo.entity.VideoTranscription;
 import com.dovideo.enums.TaskStatusEnum;
 import com.dovideo.mapper.AiSummaryResultMapper;
 import com.dovideo.mapper.VideoTaskRecordMapper;
 import com.dovideo.mapper.VideoTranscriptionMapper;
+import com.dovideo.service.AnalysisMetrics;
 import com.dovideo.service.AnalysisResultWriter;
+import com.dovideo.service.AnalysisStateService;
 import com.dovideo.service.AudioExtractionService;
 import com.dovideo.service.TaskEventService;
+import com.dovideo.util.AnalysisTaskKeys;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -18,16 +24,15 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.ValueOperations;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import java.util.concurrent.TimeUnit;
+
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.startsWith;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -36,123 +41,123 @@ import static org.mockito.Mockito.when;
 class VideoAnalysisConsumerTest {
 
     private static final String MD5 = "d41d8cd98f00b204e9800998ecf8427e";
+    private static final String GOAL = "总结重点";
 
     @Mock private RedissonClient redissonClient;
-    @Mock private RLock lock;
+    @Mock private RLock analysisLock;
+    @Mock private RLock contentLock;
     @Mock private VideoTaskRecordMapper taskRecordMapper;
     @Mock private VideoTranscriptionMapper transcriptionMapper;
     @Mock private AiSummaryResultMapper summaryMapper;
     @Mock private AudioExtractionService audioExtractionService;
     @Mock private AnalysisResultWriter resultWriter;
-    @Mock private StringRedisTemplate redisTemplate;
-    @Mock private ValueOperations<String, String> valueOperations;
     @Mock private TaskEventService taskEventService;
+    @Mock private AnalysisStateService stateService;
+    @Mock private AnalysisMetrics metrics;
 
     private VideoAnalysisConsumer consumer;
+    private AppProperties appProperties;
 
     @BeforeEach
     void setUp() {
+        appProperties = new AppProperties();
         consumer = new VideoAnalysisConsumer(
                 redissonClient, taskRecordMapper, transcriptionMapper, summaryMapper,
-                audioExtractionService, resultWriter, redisTemplate, taskEventService);
-        when(redissonClient.getLock("lock:video:" + MD5)).thenReturn(lock);
+                audioExtractionService, resultWriter, taskEventService,
+                stateService, metrics, appProperties);
+        when(redissonClient.getLock(AnalysisTaskKeys.analysisLock(
+                MD5, AnalysisTaskKeys.goalDigest(GOAL)))).thenReturn(analysisLock);
+        when(redissonClient.getLock(AnalysisTaskKeys.contentLock(MD5))).thenReturn(contentLock);
     }
 
     @Test
-    void shouldAckImmediatelyWhenLockNotAcquired() {
-        when(lock.tryLock()).thenReturn(false);
+    void shouldRetryWhenAnalysisLockCannotBeAcquiredAndNoResultExists() throws Exception {
+        when(analysisLock.tryLock(anyLong(), eq(TimeUnit.SECONDS))).thenReturn(false);
+        when(taskRecordMapper.selectById(1L)).thenReturn(task(TaskStatusEnum.UPLOADED.getCode()));
+        when(summaryMapper.selectOne(any())).thenReturn(null);
 
-        consumer.onMessage(message());
+        assertThrows(IllegalStateException.class, () -> consumer.onMessage(message()));
 
-        verify(taskRecordMapper, never()).selectById(any());
+        verify(stateService).markRetrying(1L);
+        verify(analysisLock, never()).unlock();
     }
 
     @Test
-    void shouldSkipWhenTaskAlreadySuccessAndUnlock() {
-        when(lock.tryLock()).thenReturn(true);
-        when(lock.isHeldByCurrentThread()).thenReturn(true);
-        VideoTaskRecord task = task(TaskStatusEnum.SUCCESS.getCode());
+    void shouldReuseSameGoalResultWhenAnotherConsumerFinishesFirst() throws Exception {
+        when(analysisLock.tryLock(anyLong(), eq(TimeUnit.SECONDS))).thenReturn(true);
+        when(analysisLock.isHeldByCurrentThread()).thenReturn(true);
+        VideoTaskRecord task = task(TaskStatusEnum.PROCESSING.getCode());
         when(taskRecordMapper.selectById(1L)).thenReturn(task);
-
-        consumer.onMessage(message());
-
-        verify(audioExtractionService, never()).transcribeFromMinio(anyString(), any());
-        verify(lock).unlock();
-    }
-
-    @Test
-    void shouldReuseExistingResultWhenAnotherTaskAlreadyFinished() {
-        when(lock.tryLock()).thenReturn(true);
-        when(lock.isHeldByCurrentThread()).thenReturn(true);
-        VideoTaskRecord task = task(TaskStatusEnum.UPLOADED.getCode());
-        when(taskRecordMapper.selectById(1L)).thenReturn(task);
-        when(transcriptionMapper.selectCount(any())).thenReturn(1L);
-        when(summaryMapper.selectCount(any())).thenReturn(1L);
+        when(summaryMapper.selectOne(any())).thenReturn(AiSummaryResult.builder().id(9L).build());
 
         consumer.onMessage(message());
 
         verify(resultWriter).markTaskSuccess(task);
+        verify(resultWriter).cacheSuccess(task);
         verify(audioExtractionService, never()).transcribeFromMinio(anyString(), any());
-        verify(lock).unlock();
+        verify(analysisLock).unlock();
     }
 
     @Test
-    void shouldRunBusinessAndPersistOnSuccess() {
-        when(lock.tryLock()).thenReturn(true);
-        when(lock.isHeldByCurrentThread()).thenReturn(true);
+    void shouldReuseExistingTranscriptAndOnlyRunGoalSpecificAnalysis() throws Exception {
+        when(analysisLock.tryLock(anyLong(), eq(TimeUnit.SECONDS))).thenReturn(true);
+        when(contentLock.tryLock(anyLong(), eq(TimeUnit.SECONDS))).thenReturn(true);
+        when(analysisLock.isHeldByCurrentThread()).thenReturn(true);
         VideoTaskRecord task = task(TaskStatusEnum.UPLOADED.getCode());
         when(taskRecordMapper.selectById(1L)).thenReturn(task);
-        when(transcriptionMapper.selectCount(any())).thenReturn(0L);
-        when(summaryMapper.selectCount(any())).thenReturn(0L);
+        when(summaryMapper.selectOne(any())).thenReturn(null);
+        when(transcriptionMapper.selectOne(any())).thenReturn(
+                VideoTranscription.builder().videoMd5(MD5).transcriptionContent("已有逐字稿").build());
+        SummaryResult summary = SummaryResult.builder().summary("目标总结").build();
+        when(audioExtractionService.analyzeTranscript("已有逐字稿", GOAL)).thenReturn(summary);
+
+        consumer.onMessage(message());
+
+        verify(audioExtractionService, never()).transcribeFromMinio(anyString(), any());
+        verify(audioExtractionService).analyzeTranscript("已有逐字稿", GOAL);
+        verify(resultWriter).persist(task, "已有逐字稿", summary);
+        verify(resultWriter).cacheSuccess(task);
+        verify(contentLock).unlock();
+        verify(analysisLock).unlock();
+    }
+
+    @Test
+    void shouldBuildTranscriptOnceThenPersistGoalResult() throws Exception {
+        when(analysisLock.tryLock(anyLong(), eq(TimeUnit.SECONDS))).thenReturn(true);
+        when(contentLock.tryLock(anyLong(), eq(TimeUnit.SECONDS))).thenReturn(true);
+        when(analysisLock.isHeldByCurrentThread()).thenReturn(true);
+        VideoTaskRecord task = task(TaskStatusEnum.UPLOADED.getCode());
+        when(taskRecordMapper.selectById(1L)).thenReturn(task);
+        when(summaryMapper.selectOne(any())).thenReturn(null);
+        when(transcriptionMapper.selectOne(any())).thenReturn(null);
         when(audioExtractionService.transcribeFromMinio(eq("videos/" + MD5 + "/course.mp4"), any()))
-                .thenReturn("逐字稿内容");
-        SummaryResult summary = SummaryResult.builder().summary("总结").build();
-        when(audioExtractionService.analyzeTranscript("逐字稿内容", "总结重点")).thenReturn(summary);
+                .thenReturn("新逐字稿");
+        SummaryResult summary = SummaryResult.builder().summary("目标总结").build();
+        when(audioExtractionService.analyzeTranscript("新逐字稿", GOAL)).thenReturn(summary);
 
         consumer.onMessage(message());
 
-        verify(resultWriter).persist(task, "逐字稿内容", summary);
-        verify(lock).unlock();
+        verify(resultWriter).saveTranscriptionIfAbsent(task, "新逐字稿");
+        verify(resultWriter).persist(task, "新逐字稿", summary);
+        verify(resultWriter).cacheSuccess(task);
     }
 
     @Test
-    void shouldMarkRetryingAndThrowForMqRetryWhenBusinessFails() {
-        when(lock.tryLock()).thenReturn(true);
-        when(lock.isHeldByCurrentThread()).thenReturn(true);
-        VideoTaskRecord task = task(TaskStatusEnum.UPLOADED.getCode());
-        when(taskRecordMapper.selectById(1L)).thenReturn(task);
-        when(transcriptionMapper.selectCount(any())).thenReturn(0L);
-        when(summaryMapper.selectCount(any())).thenReturn(0L);
+    void shouldFailPermanentlyWithoutMqRetryForNonRetryableAiError() throws Exception {
+        when(analysisLock.tryLock(anyLong(), eq(TimeUnit.SECONDS))).thenReturn(true);
+        when(contentLock.tryLock(anyLong(), eq(TimeUnit.SECONDS))).thenReturn(true);
+        when(analysisLock.isHeldByCurrentThread()).thenReturn(true);
+        when(contentLock.isHeldByCurrentThread()).thenReturn(true);
+        when(taskRecordMapper.selectById(1L)).thenReturn(task(TaskStatusEnum.UPLOADED.getCode()));
+        when(summaryMapper.selectOne(any())).thenReturn(null);
+        when(transcriptionMapper.selectOne(any())).thenReturn(null);
         when(audioExtractionService.transcribeFromMinio(anyString(), any()))
-                .thenThrow(new IllegalStateException("ASR 超时"));
-        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+                .thenThrow(new AiClientException("402", false, 402, null));
 
-        assertThrows(IllegalStateException.class, () -> consumer.onMessage(message()));
+        assertDoesNotThrow(() -> consumer.onMessage(message()));
 
-        verify(valueOperations).set(eq("video:status:" + MD5), eq("RETRYING"), any());
-        verify(lock).unlock();
-    }
-
-    @Test
-    void shouldMarkFailedDirectlyOnPermanentAiFailureWithoutMqRetry() {
-        when(lock.tryLock()).thenReturn(true);
-        when(lock.isHeldByCurrentThread()).thenReturn(true);
-        VideoTaskRecord task = task(TaskStatusEnum.UPLOADED.getCode());
-        when(taskRecordMapper.selectById(1L)).thenReturn(task);
-        when(transcriptionMapper.selectCount(any())).thenReturn(0L);
-        when(summaryMapper.selectCount(any())).thenReturn(0L);
-        when(audioExtractionService.transcribeFromMinio(anyString(), any()))
-                .thenThrow(new AiClientException(
-                        "ASR 调用失败 httpStatus=402 body=balance insufficient", false, 402, null));
-        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
-
-        // 不抛异常 = 直接 ACK，不再浪费 3 次 MQ 重投
-        consumer.onMessage(message());
-
-        assertEquals(TaskStatusEnum.FAILED.getCode(), task.getStatus());
-        assertTrue(task.getErrorMsg().contains("AI 服务调用失败"));
-        verify(valueOperations).set(eq("video:status:" + MD5), startsWith("FAILED:"), any());
-        verify(lock).unlock();
+        verify(stateService).markFailed(eq(1L), anyString());
+        verify(stateService).releaseActive(1L);
     }
 
     private AnalysisTaskMessage message() {
@@ -161,7 +166,8 @@ class VideoAnalysisConsumerTest {
                 .userId(1001L)
                 .videoMd5(MD5)
                 .minioPath("videos/" + MD5 + "/course.mp4")
-                .userGoal("总结重点")
+                .userGoal(GOAL)
+                .goalDigest(AnalysisTaskKeys.goalDigest(GOAL))
                 .build();
     }
 
@@ -171,6 +177,8 @@ class VideoAnalysisConsumerTest {
                 .userId(1001L)
                 .videoMd5(MD5)
                 .fileUrl("videos/" + MD5 + "/course.mp4")
+                .userGoal(GOAL)
+                .goalDigest(AnalysisTaskKeys.goalDigest(GOAL))
                 .status(status)
                 .build();
     }

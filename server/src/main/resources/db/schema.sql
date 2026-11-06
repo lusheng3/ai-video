@@ -15,7 +15,7 @@ USE dovideo_ai;
 CREATE TABLE IF NOT EXISTS user_info (
     id            BIGINT       NOT NULL AUTO_INCREMENT COMMENT '用户主键ID',
     username      VARCHAR(64)  NOT NULL COMMENT '登录用户名',
-    password_hash VARCHAR(128) NOT NULL COMMENT '密码SHA-256加盐哈希',
+    password_hash VARCHAR(128) NOT NULL COMMENT 'PBKDF2随机盐哈希，兼容旧SHA-256迁移',
     nickname      VARCHAR(64)  NOT NULL COMMENT '用户昵称',
     account_type  TINYINT      NOT NULL DEFAULT 0 COMMENT '账户权限级别：0-免费用户，1-付费VIP用户',
     create_time   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS video_task_record (
     total_size    BIGINT       NOT NULL DEFAULT 0 COMMENT '视频文件总字节数',
     total_chunks  INT          NOT NULL DEFAULT 1 COMMENT '分片总数',
     video_md5     VARCHAR(32)  NOT NULL COMMENT '视频文件128位MD5指纹(32位hex)',
+    user_goal     VARCHAR(500) NULL     COMMENT '当前分析目标原文',
+    goal_digest   VARCHAR(64)  NULL     COMMENT '当前分析目标SHA-256摘要',
     file_url      VARCHAR(512) NULL     COMMENT 'MinIO中的对象存储路径(videos/{md5}/{name})',
     status        TINYINT      NOT NULL DEFAULT 0 COMMENT '任务状态机：0-待上传/已上传待分析，1-排队中，2-处理中，3-已完成，4-失败，5-合并中',
     error_msg     VARCHAR(512) NULL     COMMENT '失败错误原因(供前端轮询弹窗提示)',
@@ -65,12 +67,13 @@ CREATE TABLE IF NOT EXISTS ai_summary_result (
     id              BIGINT      NOT NULL AUTO_INCREMENT COMMENT '主键ID',
     task_id         BIGINT      NOT NULL COMMENT '关联的任务ID',
     video_md5       VARCHAR(32) NOT NULL COMMENT '视频MD5指纹(内容级唯一防重)',
+    goal_digest     VARCHAR(64) NOT NULL COMMENT '分析目标SHA-256摘要(目标级防重)',
     structured_data JSON        NOT NULL COMMENT '大模型输出的结构化总结JSON(summary/key_points/chapters)',
     token_cost      INT         NOT NULL DEFAULT 0 COMMENT '本次调用消耗的Token数',
     create_time     DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
     update_time     DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '更新时间',
     is_deleted      TINYINT     NOT NULL DEFAULT 0 COMMENT '逻辑删除：0-未删除，1-已删除',
     PRIMARY KEY (id),
-    UNIQUE KEY uk_summary_md5 (video_md5),
-    UNIQUE KEY uk_summary_task (task_id)
+    UNIQUE KEY uk_summary_video_goal (video_md5, goal_digest),
+    KEY idx_summary_task (task_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AI结构化总结结果表(垂直拆分)';

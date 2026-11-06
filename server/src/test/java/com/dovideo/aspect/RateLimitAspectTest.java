@@ -3,6 +3,8 @@ package com.dovideo.aspect;
 import com.dovideo.annotation.RateLimit;
 import com.dovideo.common.ErrorCode;
 import com.dovideo.config.AppProperties;
+import com.dovideo.service.AnalysisMetrics;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import com.dovideo.exception.BusinessException;
 import com.dovideo.service.AuthService;
 import org.aspectj.lang.ProceedingJoinPoint;
@@ -44,7 +46,8 @@ class RateLimitAspectTest {
     @BeforeEach
     void setUp() {
         appProperties = new AppProperties();
-        rateLimitAspect = new RateLimitAspect(redisTemplate, appProperties);
+        rateLimitAspect = new RateLimitAspect(
+                redisTemplate, appProperties, new AnalysisMetrics(new SimpleMeterRegistry()));
 
         MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/analysis/submit");
         request.setAttribute(AuthService.ATTR_USER_ID, 1001L);

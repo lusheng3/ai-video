@@ -99,3 +99,15 @@ pm run dev 启动后 http://127.0.0.1:5173 返回 200，Vite /api 代理到后�
   - `UploadReconciliationJob` 不再只凭对象存在推进成功；超时“合并中”任务必须重新核对完整 MD5，一致才转为 UPLOADED。
   - `checkUpload` 与合并幂等查询只接受 UPLOADED/SUCCESS 状态，避免失败任务被误判为秒传命中。
   - 新增完整 MD5 流式计算、正常对拍、对拍失败清理、后台校准对拍测试；`mvn test` 全量 **43/43** 通过。
+
+- **2026-11-07 [高并发幂等、目标隔离、可观测性与压测]**：
+  - 新增 `AnalysisTaskKeys`、`AnalysisStateService`，使用 `analysis:active:task:{taskId}` + Redis `SET NX` 原子拦截重复分析提交。
+  - 消费者拆分为 `lock:analysis:{videoMd5}:{goalDigest}` 目标锁与 `lock:analysis-content:{videoMd5}` 内容锁；同目标等待后复用，不同目标复用逐字稿。
+  - `video_task_record` 增加 `user_goal/goal_digest`；`ai_summary_result` 改为 `UNIQUE(video_md5, goal_digest)`，移除单列 task_id 唯一约束。
+  - 提交接口增加 `ACCEPTED/REUSED/DUPLICATE` 处置，分别映射 HTTP 202/200/409；重复请求前端直接接管已有进度。
+  - 增加 `AnalysisRecoveryJob` 恢复活动 Key 已失效的卡死任务；死信消费者清理活动 Key。
+  - 增加 Actuator、Micrometer、Prometheus 业务指标与 Flyway 迁移。
+  - 注册接口忽略客户端 `accountType`；密码改为 PBKDF2 随机盐，并兼容旧 SHA-256 登录升级。
+  - 跨用户秒传改为必须真实上传，完整 MD5 对拍通过后才复用对象。
+  - 新增 `jmeter/dovideo-idempotency.jmx` 和 `jmeter/RESULTS.md`。真实 50 并发结果：1×202、49×409、0 错误，平均 15.46 ms，最大 112 ms；Prometheus accepted=1、duplicate=49。
+  - 新增根目录 `README.md`。后端测试全量通过，前端生产构建通过。

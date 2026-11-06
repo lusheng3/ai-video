@@ -21,6 +21,7 @@ dist/
 logs/
 *.log
 .env
+tmp/
 
 # Local secrets & generated media
 server/config/application-local.yml

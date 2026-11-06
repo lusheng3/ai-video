@@ -12,7 +12,7 @@
 | 401 | 401 | 未登录或 Token 过期 |
 | 403 | 403 | 越权访问他人资源 |
 | 404 | 404 | 任务不存在 |
-| 409 | 409 | 分片未齐 / 正在合并 / 重复处理 |
+| 409 | 409 | 分片未齐 / 正在合并 / 同一分析任务重复提交 |
 | 429 | 429 | 令牌桶限流触发 |
 | 503 | 503 | MQ 投递失败 / MinIO 不可用 |
 | 500 | 500 | 服务器内部错误 |
@@ -25,7 +25,7 @@
 `POST /api/user/register`
 
 ```json
-{ "username": "alice", "password": "123456", "nickname": "Alice", "accountType": 0 }
+{ "username": "alice", "password": "123456", "nickname": "Alice" }
 ```
 
 响应 `data`：
@@ -47,7 +47,7 @@
 { "username": "alice", "password": "123456" }
 ```
 
-响应同注册。`accountType`：`0` 普通用户（1 令牌/秒，容量 5）；`1` VIP（5 令牌/秒，容量 20）。
+服务端忽略客户端传来的 `accountType`，新注册用户固定为普通用户。账户等级只能由后台或支付回调修改。`accountType`：`0` 普通用户（1 令牌/秒，容量 5）；`1` VIP（5 令牌/秒，容量 20）。
 
 ### 1.3 退出
 `POST /api/user/logout`，Header 带 Token。
@@ -141,7 +141,7 @@
 
 ## 3. AI 异步分析
 
-### 3.1 提交分析（令牌桶限流）
+### 3.1 提交分析（SET NX 幂等 + 令牌桶限流）
 `POST /api/analysis/submit`
 
 ```json
@@ -154,6 +154,8 @@
 {
   "taskId": 1,
   "videoMd5": "385a...",
+  "goalDigest": "9af0...",
+  "disposition": "ACCEPTED",
   "status": 1,
   "statusLabel": "QUEUED",
   "reused": false,
@@ -161,7 +163,9 @@
 }
 ```
 
-- 命中 Redis `video:status:{md5}=PROCESSING` 或 MySQL 已有同内容结果时，不会重复投递 MQ。
+- 服务端通过 `analysis:active:task:{taskId}` 的 `SET NX` 原子抢占活动任务。只有第一个请求返回 `HTTP 202 + disposition=ACCEPTED` 并投递 MQ。
+- 已有同视频、同 `goalDigest` 的结果时返回 `HTTP 200 + disposition=REUSED`，不投递 MQ。
+- 已有相同任务正在分析时返回 `HTTP 409 + disposition=DUPLICATE`，前端直接订阅已有任务进度。
 - 超过令牌桶容量返回 **HTTP 429**。
 - MQ 投递失败会回滚状态并返回 **HTTP 503**。
 
@@ -174,6 +178,8 @@
 {
   "taskId": 1,
   "videoMd5": "385a...",
+  "userGoal": "提炼视频核心内容",
+  "goalDigest": "9af0...",
   "status": 2,
   "statusLabel": "PROCESSING",
   "stage": "ASR",
@@ -250,4 +256,26 @@ data: {"taskId":1,"status":2,"statusLabel":"PROCESSING","stage":"ASR","stageLabe
   "message": "OK",
   "data": { "status": "UP", "mockEnabled": true, "analysisTopic": "video-analysis-topic" }
 }
+```
+
+## 5. 指标
+
+Actuator 暴露：
+
+```text
+GET /actuator/health
+GET /actuator/prometheus
+```
+
+关键业务指标：
+
+```text
+dovideo_analysis_submit_total{result}
+dovideo_analysis_mq_send_failure_total
+dovideo_analysis_lock_total{result}
+dovideo_analysis_result_total{result}
+dovideo_analysis_processing_seconds
+dovideo_analysis_lock_wait_seconds{stage}
+dovideo_analysis_stale_recovered_total
+dovideo_rate_limited_total{scope}
 ```

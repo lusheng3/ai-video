@@ -64,6 +64,7 @@ public class UploadService {
         // 【情况1：秒传判定】查 MySQL 是否已存在该 MD5 且已合并成功的记录（status != 5合并中 且 fileUrl 非空）
         VideoTaskRecord existing = taskRecordMapper.selectOne(
                 new LambdaQueryWrapper<VideoTaskRecord>()
+                        .eq(VideoTaskRecord::getUserId, userId)
                         .eq(VideoTaskRecord::getVideoMd5, normalizedMd5)
                         .isNotNull(VideoTaskRecord::getFileUrl)
                         .in(VideoTaskRecord::getStatus,
@@ -73,32 +74,12 @@ public class UploadService {
                         .last("LIMIT 1"));
 
         if (existing != null) {
-            VideoTaskRecord userRecord = existing;
-            if (!existing.getUserId().equals(userId)) {
-                // 跨用户上传同一视频：直接复用已有 MinIO fileUrl，若原视频已分析完成则连同完成状态一并复用
-                int targetStatus = existing.getStatus() == TaskStatusEnum.SUCCESS.getCode()
-                        ? TaskStatusEnum.SUCCESS.getCode()
-                        : TaskStatusEnum.UPLOADED.getCode();
-                userRecord = VideoTaskRecord.builder()
-                        .userId(userId)
-                        .fileName(fileName != null && !fileName.isBlank() ? fileName : existing.getFileName())
-                        .totalSize(totalSize != null ? totalSize : existing.getTotalSize())
-                        .totalChunks(totalChunks != null ? totalChunks : existing.getTotalChunks())
-                        .videoMd5(normalizedMd5)
-                        .fileUrl(existing.getFileUrl())
-                        .status(targetStatus)
-                        .createTime(LocalDateTime.now())
-                        .updateTime(LocalDateTime.now())
-                        .isDeleted(0)
-                        .build();
-                taskRecordMapper.insert(userRecord);
-            }
             log.info("upload_check_deduplicated fileMd5={} userId={} taskId={}",
-                    normalizedMd5, userId, userRecord.getId());
+                    normalizedMd5, userId, existing.getId());
             return UploadCheckResponse.builder()
                     .deduplicated(true)
-                    .taskId(userRecord.getId())
-                    .fileUrl(userRecord.getFileUrl())
+                    .taskId(existing.getId())
+                    .fileUrl(existing.getFileUrl())
                     .uploadedChunks(Collections.emptySet())
                     .build();
         }
@@ -237,8 +218,25 @@ public class UploadService {
                         actualMd5);
             }
 
+            // 完整 MD5 已验证后，才允许跨用户复用相同内容的成品对象。
+            VideoTaskRecord sharedRecord = findCompletedContent(normalizedMd5, taskRecord.getId());
+            String finalObjectKey = mergedObjectKey;
+            if (sharedRecord != null) {
+                finalObjectKey = sharedRecord.getFileUrl();
+                if (!mergedObjectKey.equals(finalObjectKey)) {
+                    try {
+                        minioService.removeObject(mergedObjectKey);
+                    } catch (RuntimeException cleanupError) {
+                        log.warn("duplicate_merged_object_cleanup_failed objectKey={}",
+                                mergedObjectKey, cleanupError);
+                    }
+                }
+                log.info("upload_content_deduplicated fileMd5={} userId={} sourceTaskId={}",
+                        normalizedMd5, userId, sharedRecord.getId());
+            }
+
             // 【更新状态为已上传待分析(0)并清理现场】
-            taskRecord.setFileUrl(mergedObjectKey);
+            taskRecord.setFileUrl(finalObjectKey);
             taskRecord.setStatus(TaskStatusEnum.UPLOADED.getCode());
             taskRecord.setUpdateTime(LocalDateTime.now());
             taskRecordMapper.updateById(taskRecord);
@@ -249,7 +247,7 @@ public class UploadService {
             return UploadMergeResponse.builder()
                     .taskId(taskRecord.getId())
                     .videoMd5(normalizedMd5)
-                    .fileUrl(mergedObjectKey)
+                    .fileUrl(finalObjectKey)
                     .status(taskRecord.getStatus())
                     .build();
         } finally {
@@ -298,6 +296,19 @@ public class UploadService {
             log.error("invalid_merged_task_mark_failed_error taskId={}", taskRecord.getId(), updateError);
         }
         throw mismatch;
+    }
+
+    private VideoTaskRecord findCompletedContent(String videoMd5, Long excludeTaskId) {
+        return taskRecordMapper.selectOne(
+                new LambdaQueryWrapper<VideoTaskRecord>()
+                        .eq(VideoTaskRecord::getVideoMd5, videoMd5)
+                        .isNotNull(VideoTaskRecord::getFileUrl)
+                        .in(VideoTaskRecord::getStatus,
+                                TaskStatusEnum.UPLOADED.getCode(),
+                                TaskStatusEnum.SUCCESS.getCode())
+                        .ne(excludeTaskId != null, VideoTaskRecord::getId, excludeTaskId)
+                        .orderByAsc(VideoTaskRecord::getId)
+                        .last("LIMIT 1"));
     }
 
     /**

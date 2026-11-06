@@ -17,6 +17,6 @@ public class AuthRequest {
 
     private String nickname;
 
-    /** 可选：0-普通免费用户，1-付费VIP用户 */
+    /** 兼容旧客户端字段；服务端注册时始终忽略，新用户固定为免费用户。 */
     private Integer accountType;
 }

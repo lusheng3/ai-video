@@ -5,13 +5,13 @@ import com.dovideo.entity.VideoTaskRecord;
 import com.dovideo.enums.AnalysisStageEnum;
 import com.dovideo.enums.TaskStatusEnum;
 import com.dovideo.mapper.VideoTaskRecordMapper;
-import com.dovideo.service.AnalysisService;
+import com.dovideo.service.AnalysisStateService;
 import com.dovideo.service.TaskEventService;
+import com.dovideo.util.AnalysisTaskKeys;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.spring.annotation.RocketMQMessageListener;
 import org.apache.rocketmq.spring.core.RocketMQListener;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
@@ -31,8 +31,8 @@ import java.time.LocalDateTime;
 public class DeadLetterConsumer implements RocketMQListener<AnalysisTaskMessage> {
 
     private final VideoTaskRecordMapper taskRecordMapper;
-    private final StringRedisTemplate redisTemplate;
     private final TaskEventService taskEventService;
+    private final AnalysisStateService stateService;
 
     @Override
     public void onMessage(AnalysisTaskMessage msg) {
@@ -41,19 +41,19 @@ public class DeadLetterConsumer implements RocketMQListener<AnalysisTaskMessage>
             return;
         }
         String errorMsg = "分析重试次数已耗尽，任务进入死信队列，请联系管理员处理";
+        String goalDigest = msg.getUserGoal() == null || msg.getUserGoal().isBlank()
+                ? null : AnalysisTaskKeys.goalDigest(msg.getUserGoal());
         VideoTaskRecord task = taskRecordMapper.selectById(msg.getTaskId());
         if (task != null) {
             task.setStatus(TaskStatusEnum.FAILED.getCode());
+            task.setUserGoal(msg.getUserGoal());
+            task.setGoalDigest(goalDigest);
             task.setErrorMsg(errorMsg);
             task.setUpdateTime(LocalDateTime.now());
             taskRecordMapper.updateById(task);
         }
-        if (msg.getVideoMd5() != null) {
-            redisTemplate.opsForValue().set(
-                    AnalysisService.STATUS_KEY_PREFIX + msg.getVideoMd5(),
-                    AnalysisService.FAILED_PREFIX + errorMsg,
-                    AnalysisService.STATUS_TTL);
-        }
+        stateService.markFailed(msg.getTaskId(), errorMsg);
+        stateService.releaseActive(msg.getTaskId());
         log.error("dead_letter_task_marked_failed taskId={} videoMd5={}", msg.getTaskId(), msg.getVideoMd5());
         taskEventService.publishStage(
                 msg.getTaskId(), AnalysisStageEnum.FAILED, errorMsg, 0, errorMsg);

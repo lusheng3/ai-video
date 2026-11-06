@@ -41,7 +41,7 @@ public class TaskEventService implements MessageListener {
     public static final String STAGE_KEY_PREFIX = "video:stage:";
 
     private static final long STREAM_TIMEOUT_MS = 30 * 60 * 1000L;
-    private static final Duration STAGE_TTL = Duration.ofHours(1);
+    private static final Duration STAGE_TTL = Duration.ofHours(6);
 
     private final ConcurrentHashMap<Long, CopyOnWriteArrayList<Subscription>> subscribers =
             new ConcurrentHashMap<>();

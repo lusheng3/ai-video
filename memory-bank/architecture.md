@@ -6,6 +6,7 @@
 
 ```text
 DOVideo-AI-v2/
+├── README.md                         # 项目总览、启动、幂等设计、指标与压测结果
 ├── AGENTS.md                         # AI 协作与开发铁律（含 MQ 消费者六步规范与 memory-bank 规则）
 ├── CLAUDE.md                         # 与 AGENTS.md 保持同步的指令文件
 ├── docker-compose.yml                # MySQL 8 (13306) + Redis 7 (16379) + MinIO (9000/9001) + RocketMQ 5.3.4 一键编排
@@ -32,7 +33,9 @@ DOVideo-AI-v2/
 │           └── md5.worker.js         # 大文件 MD5 增量计算 Worker
 ├── jmeter/
 │   ├── dovideo-benchmark.jmx         # 异步RT/轮询/限流/同步对照 四组压测
-│   └── README.md                     # 压测运行说明
+│   ├── dovideo-idempotency.jmx       # 50 并发同任务幂等压测
+│   ├── README.md                     # 压测运行说明
+│   └── RESULTS.md                    # 本机实测结果
 └── server/                           # Spring Boot 3 后端工程（在 IDEA 中打开此目录）
     ├── pom.xml                       # Maven 依赖配置（含 spring-boot-starter-aop）
     └── src/
@@ -81,9 +84,12 @@ DOVideo-AI-v2/
         │   │   │   ├── UploadService.java               # 秒传预检、Redis Set 续传、合并锁、composeObject 与完整 MD5 对拍
         │   │   │   ├── UploadReconciliationJob.java     # 后台校准“合并中”任务，并复核完整 MD5 后才推进成功
         │   │   │   ├── AudioExtractionService.java      # MinIO 下载 + FFmpeg 分段 + 逐段 ASR（可回调进度）
-        │   │   │   ├── AnalysisService.java             # 前置状态拦截 + MQ 同步投递 + 阶段快照/降级轮询聚合 + 同步对照组
+        │   │   │   ├── AnalysisService.java             # SET NX 活动任务 + MQ 投递 + 状态聚合
+        │   │   │   ├── AnalysisStateService.java        # 活动 Key、状态快照、完成 Key 的统一 Redis 边界
+        │   │   │   ├── AnalysisMetrics.java             # Micrometer 业务计数器、锁等待与处理耗时
+        │   │   │   ├── AnalysisRecoveryJob.java         # 活动 Key 失联的卡死任务恢复
         │   │   │   ├── TaskEventService.java            # SSE 订阅表 + Redis Pub/Sub 广播 + video:stage 快照读写
-        │   │   │   └── AnalysisResultWriter.java        # 逐字稿/总结落库（唯一索引兜底）+ 更新 SUCCESS + Redis 缓存
+        │   │   │   └── AnalysisResultWriter.java        # 转录按视频复用、总结按目标隔离、事务落库
         │   │   ├── mapper/                              # 【持久层 DAO / Mapper】
         │   │   │   ├── UserInfoMapper.java              # 用户主表 Mapper
         │   │   │   ├── VideoTaskRecordMapper.java       # 视频任务主表 Mapper
@@ -105,6 +111,8 @@ DOVideo-AI-v2/
         │   │   │   ├── AnalysisStatusResponse.java      # /analysis/status 响应体（阶段/进度 + 逐字稿 + 结构化总结）
         │   │   │   ├── AnalysisEvent.java               # SSE 与降级轮询共用的事件载荷（含 terminal() 终态判断）
         │   │   │   └── AnalysisTaskMessage.java         # 投递到 RocketMQ 的轻量消息体
+        │   │   ├── util/
+        │   │   │   └── AnalysisTaskKeys.java            # active/status/analysis/content/completed Key 规范
         │   │   ├── enums/                               # 【业务状态机枚举层】
         │   │   │   ├── AccountTypeEnum.java             # 0-免费用户，1-付费VIP
         │   │   │   ├── AnalysisStageEnum.java           # 细粒度阶段：QUEUED/ASR/LLM/PERSISTING/COMPLETED/FAILED...
@@ -115,7 +123,8 @@ DOVideo-AI-v2/
         │   └── resources/
         │       ├── application.yml                      # 应用主配置
         │       ├── db/
-        │       │   └── schema.sql                       # 4 张核心业务表建表 SQL（含索引与唯一约束）
+        │       │   ├── schema.sql                       # 4 张核心业务表建表 SQL
+        │       │   └── migration/                       # Flyway 幂等、目标摘要、复合唯一键迁移
         │       └── lua/
         │           └── token_bucket.lua                 # Redis Hash 惰性计算令牌桶 Lua 脚本
         └── test/
@@ -129,9 +138,12 @@ DOVideo-AI-v2/
                 ├── exception/
                 │   └── GlobalExceptionHandlerTest.java
                 ├── util/
-                │   └── ExponentialBackoffRetryTest.java # 1s->2s->4s 指数退避与永久异常快速失败
+                │   ├── ExponentialBackoffRetryTest.java # 1s->2s->4s 指数退避与永久异常快速失败
+                │   └── AnalysisTaskKeysTest.java        # 目标摘要稳定性和隔离
                 └── service/
                     ├── AuthServiceTest.java             # 注册/登录/唯一键冲突单元测试
                     ├── MinioServiceTest.java            # MinIO Lifecycle/composeObject/完整对象MD5/预签名URL单测
-                    └── UploadServiceTest.java           # 秒传/续传/分片与完整MD5校验/合并锁/校准单测
+                    ├── AnalysisServiceTest.java         # 24 并发提交/活动 Key/MQ 回滚
+                    ├── AnalysisRecoveryJobTest.java     # 卡死任务恢复
+                    └── UploadServiceTest.java           # 秒传/续传/完整MD5/跨用户内容复用/校准
 ```

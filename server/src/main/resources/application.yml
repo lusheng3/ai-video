@@ -18,6 +18,23 @@ spring:
       host: ${REDIS_HOST:127.0.0.1}
       port: ${REDIS_PORT:16379}
       database: 0
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    baseline-version: 0
+    locations: classpath:db/migration
+  sql:
+    init:
+      mode: never
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: when_authorized
 
 mybatis-plus:
   configuration:
@@ -51,6 +68,13 @@ app:
   upload:
     chunk-size-bytes: 5242880
     redis-ttl-hours: 24
+  analysis:
+    active-ttl-hours: ${ANALYSIS_ACTIVE_TTL_HOURS:6}
+    status-ttl-hours: ${ANALYSIS_STATUS_TTL_HOURS:6}
+    completed-ttl-days: ${ANALYSIS_COMPLETED_TTL_DAYS:7}
+    lock-wait-seconds: ${ANALYSIS_LOCK_WAIT_SECONDS:120}
+    stale-after-minutes: ${ANALYSIS_STALE_AFTER_MINUTES:120}
+    recovery-interval-ms: ${ANALYSIS_RECOVERY_INTERVAL_MS:300000}
   rate-limit:
     enabled: ${APP_RATE_LIMIT_ENABLED:true}
     free-user-rate-per-sec: 1.0

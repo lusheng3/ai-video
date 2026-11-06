@@ -5,6 +5,7 @@ import com.dovideo.common.ErrorCode;
 import com.dovideo.config.AppProperties;
 import com.dovideo.enums.AccountTypeEnum;
 import com.dovideo.exception.BusinessException;
+import com.dovideo.service.AnalysisMetrics;
 import com.dovideo.service.AuthService;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
@@ -37,11 +38,15 @@ public class RateLimitAspect {
 
     private final StringRedisTemplate redisTemplate;
     private final AppProperties appProperties;
+    private final AnalysisMetrics metrics;
     private final DefaultRedisScript<Long> tokenBucketScript;
 
-    public RateLimitAspect(StringRedisTemplate redisTemplate, AppProperties appProperties) {
+    public RateLimitAspect(StringRedisTemplate redisTemplate,
+                           AppProperties appProperties,
+                           AnalysisMetrics metrics) {
         this.redisTemplate = redisTemplate;
         this.appProperties = appProperties;
+        this.metrics = metrics;
         this.tokenBucketScript = new DefaultRedisScript<>();
         this.tokenBucketScript.setLocation(new ClassPathResource("lua/token_bucket.lua"));
         this.tokenBucketScript.setResultType(Long.class);
@@ -76,6 +81,7 @@ public class RateLimitAspect {
 
         boolean allowed = tryAcquire(apiPath, subject, baseRate, baseCapacity, props.getExpireSeconds());
         if (!allowed) {
+            metrics.rateLimited(apiPath);
             log.warn("rate_limit_exceeded apiPath={} userId={} rate={} capacity={}",
                     apiPath, subject, baseRate, baseCapacity);
             throw new BusinessException(ErrorCode.RATE_LIMITED, "当前请求过多，请稍后再试");

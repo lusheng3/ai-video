@@ -22,4 +22,5 @@ public class AnalysisTaskMessage implements Serializable {
     /** MinIO 内的对象 Key，如 videos/{md5}/course.mp4 */
     private String minioPath;
     private String userGoal;
+    private String goalDigest;
 }

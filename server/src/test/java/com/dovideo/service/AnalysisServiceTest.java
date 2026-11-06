@@ -17,18 +17,24 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.ValueOperations;
 
-import java.time.Duration;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -41,11 +47,11 @@ class AnalysisServiceTest {
     @Mock private VideoTranscriptionMapper transcriptionMapper;
     @Mock private AiSummaryResultMapper summaryMapper;
     @Mock private RocketMQTemplate rocketMQTemplate;
-    @Mock private StringRedisTemplate redisTemplate;
-    @Mock private ValueOperations<String, String> valueOperations;
+    @Mock private AnalysisStateService stateService;
     @Mock private AudioExtractionService audioExtractionService;
     @Mock private AnalysisResultWriter resultWriter;
     @Mock private TaskEventService taskEventService;
+    @Mock private AnalysisMetrics metrics;
 
     private AppProperties appProperties;
     private AnalysisService analysisService;
@@ -55,67 +61,64 @@ class AnalysisServiceTest {
         appProperties = new AppProperties();
         analysisService = new AnalysisService(
                 taskRecordMapper, transcriptionMapper, summaryMapper,
-                rocketMQTemplate, redisTemplate, audioExtractionService,
-                resultWriter, appProperties, taskEventService);
+                rocketMQTemplate, stateService, audioExtractionService,
+                resultWriter, appProperties, taskEventService, metrics);
     }
 
     @Test
-    void shouldReturnImmediatelyWhenRedisSaysProcessingAndNotSendMq() {
-        VideoTaskRecord task = task(1L, 1001L, TaskStatusEnum.UPLOADED.getCode());
-        when(taskRecordMapper.selectById(1L)).thenReturn(task);
-        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
-        when(valueOperations.get("video:status:" + MD5)).thenReturn("PROCESSING");
+    void shouldReturnDuplicateWithoutSendingMqWhenActiveKeyAlreadyExists() {
+        when(taskRecordMapper.selectById(1L)).thenReturn(task(1L));
+        when(transcriptionMapper.selectCount(any())).thenReturn(0L);
+        when(summaryMapper.selectCount(any())).thenReturn(0L);
+        when(stateService.acquireActive(eq(1L), anyString())).thenReturn(false);
 
         AnalysisSubmitResponse response = analysisService.submit(1L, "总结重点", 1001L);
 
-        assertEquals(1L, response.getTaskId());
+        assertEquals(TaskStatusEnum.QUEUED.getCode(), response.getStatus());
         verify(rocketMQTemplate, never()).syncSend(anyString(), any(Object.class));
+        verify(metrics).submit("duplicate");
     }
 
     @Test
-    void shouldReuseExistingResultWithoutSendingMq() {
-        VideoTaskRecord task = task(2L, 1001L, TaskStatusEnum.UPLOADED.getCode());
+    void shouldReuseExistingSameGoalResultWithoutSendingMq() {
+        VideoTaskRecord task = task(2L);
         when(taskRecordMapper.selectById(2L)).thenReturn(task);
-        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
-        when(valueOperations.get("video:status:" + MD5)).thenReturn(null);
         when(transcriptionMapper.selectCount(any())).thenReturn(1L);
         when(summaryMapper.selectCount(any())).thenReturn(1L);
 
         AnalysisSubmitResponse response = analysisService.submit(2L, "总结重点", 1001L);
 
         assertTrue(response.isReused());
+        assertEquals(TaskStatusEnum.SUCCESS.getCode(), response.getStatus());
         verify(resultWriter).markTaskSuccess(task);
+        verify(resultWriter).cacheSuccess(task);
         verify(rocketMQTemplate, never()).syncSend(anyString(), any(Object.class));
     }
 
     @Test
-    void shouldSendMqAndMarkQueuedOnHappyPath() {
-        VideoTaskRecord task = task(3L, 1001L, TaskStatusEnum.UPLOADED.getCode());
+    void shouldSendMqAfterAtomicallyAcquiringActiveKey() {
+        VideoTaskRecord task = task(3L);
         when(taskRecordMapper.selectById(3L)).thenReturn(task);
-        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
-        when(valueOperations.get("video:status:" + MD5)).thenReturn(null);
         when(transcriptionMapper.selectCount(any())).thenReturn(0L);
         when(summaryMapper.selectCount(any())).thenReturn(0L);
-        SendResult sendResult = new SendResult(SendStatus.SEND_OK, "msg-1", "offset-1", null, 0L);
-        when(rocketMQTemplate.syncSend(anyString(), any(Object.class))).thenReturn(sendResult);
+        when(stateService.acquireActive(eq(3L), anyString())).thenReturn(true);
+        when(rocketMQTemplate.syncSend(anyString(), any(Object.class)))
+                .thenReturn(new SendResult(SendStatus.SEND_OK, "msg-1", "offset-1", null, 0L));
 
         AnalysisSubmitResponse response = analysisService.submit(3L, "总结重点", 1001L);
 
         assertEquals(TaskStatusEnum.QUEUED.getCode(), response.getStatus());
-        assertEquals(TaskStatusEnum.QUEUED.getCode(), task.getStatus());
-        verify(taskRecordMapper, org.mockito.Mockito.atLeast(1)).updateById(task);
-        verify(valueOperations).set(eq("video:status:" + MD5), eq("PROCESSING"), eq(Duration.ofHours(1)));
+        verify(stateService).markProcessing(3L);
         verify(rocketMQTemplate).syncSend(eq("video-analysis-topic"), any(Object.class));
+        verify(metrics).submit("accepted");
     }
 
     @Test
-    void shouldRollbackStatusAndThrow503WhenMqSendFails() {
-        VideoTaskRecord task = task(4L, 1001L, TaskStatusEnum.UPLOADED.getCode());
-        when(taskRecordMapper.selectById(4L)).thenReturn(task);
-        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
-        when(valueOperations.get("video:status:" + MD5)).thenReturn(null);
+    void shouldRollbackActiveStateWhenMqSendFails() {
+        when(taskRecordMapper.selectById(4L)).thenReturn(task(4L));
         when(transcriptionMapper.selectCount(any())).thenReturn(0L);
         when(summaryMapper.selectCount(any())).thenReturn(0L);
+        when(stateService.acquireActive(eq(4L), anyString())).thenReturn(true);
         when(rocketMQTemplate.syncSend(anyString(), any(Object.class)))
                 .thenThrow(new RuntimeException("broker down"));
 
@@ -123,19 +126,62 @@ class AnalysisServiceTest {
                 () -> analysisService.submit(4L, "总结重点", 1001L));
 
         assertEquals(ErrorCode.SERVICE_UNAVAILABLE, ex.getErrorCode());
-        assertEquals(TaskStatusEnum.UPLOADED.getCode(), task.getStatus());
-        verify(redisTemplate).delete("video:status:" + MD5);
+        verify(stateService).clearStatus(4L);
+        verify(stateService).releaseActive(4L);
+        verify(metrics).mqSendFailure();
     }
 
-    private VideoTaskRecord task(Long id, Long userId, int status) {
+    @Test
+    void shouldAllowOnlyOneWinnerAcrossConcurrentSubmissions() throws Exception {
+        when(taskRecordMapper.selectById(5L)).thenAnswer(invocation -> task(5L));
+        when(transcriptionMapper.selectCount(any())).thenReturn(0L);
+        when(summaryMapper.selectCount(any())).thenReturn(0L);
+        when(rocketMQTemplate.syncSend(anyString(), any(Object.class)))
+                .thenReturn(new SendResult(SendStatus.SEND_OK, "msg-1", "offset-1", null, 0L));
+        Set<Long> activeTasks = ConcurrentHashMap.newKeySet();
+        when(stateService.acquireActive(anyLong(), anyString()))
+                .thenAnswer(invocation -> activeTasks.add(invocation.getArgument(0)));
+
+        int callers = 24;
+        ExecutorService pool = Executors.newFixedThreadPool(callers);
+        CountDownLatch ready = new CountDownLatch(callers);
+        CountDownLatch start = new CountDownLatch(1);
+        CountDownLatch done = new CountDownLatch(callers);
+        AtomicInteger accepted = new AtomicInteger();
+        for (int i = 0; i < callers; i++) {
+            pool.submit(() -> {
+                ready.countDown();
+                try {
+                    start.await();
+                    AnalysisSubmitResponse response = analysisService.submit(5L, "总结重点", 1001L);
+                    if ("任务已进入异步分析队列".equals(response.getMessage())) {
+                        accepted.incrementAndGet();
+                    }
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    done.countDown();
+                }
+            });
+        }
+        assertTrue(ready.await(5, TimeUnit.SECONDS));
+        start.countDown();
+        assertTrue(done.await(10, TimeUnit.SECONDS));
+        pool.shutdownNow();
+
+        assertEquals(1, accepted.get());
+        verify(rocketMQTemplate, times(1)).syncSend(anyString(), any(Object.class));
+    }
+
+    private VideoTaskRecord task(Long id) {
         return VideoTaskRecord.builder()
                 .id(id)
-                .userId(userId)
+                .userId(1001L)
                 .videoMd5(MD5)
                 .fileName("course.mp4")
                 .fileUrl("videos/" + MD5 + "/course.mp4")
                 .totalChunks(3)
-                .status(status)
+                .status(TaskStatusEnum.UPLOADED.getCode())
                 .build();
     }
 }

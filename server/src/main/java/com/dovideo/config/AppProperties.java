@@ -15,6 +15,7 @@ public class AppProperties {
     private RateLimitProps rateLimit = new RateLimitProps();
     private MqProps mq = new MqProps();
     private AiProps ai = new AiProps();
+    private AnalysisProps analysis = new AnalysisProps();
 
     @Data
     public static class MinioProps {
@@ -53,6 +54,16 @@ public class AppProperties {
         private String dlqTopic = "%DLQ%video-analysis-group";
         private String customDlqTopic = "video-analysis-dlq-topic";
         private int maxReconsumeTimes = 3;
+    }
+
+    @Data
+    public static class AnalysisProps {
+        private int activeTtlHours = 6;
+        private int statusTtlHours = 6;
+        private int completedTtlDays = 7;
+        private int lockWaitSeconds = 120;
+        private int staleAfterMinutes = 120;
+        private long recoveryIntervalMs = 300000L;
     }
 
     /**

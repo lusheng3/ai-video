@@ -147,7 +147,16 @@ async function analyze(task) {
     watchTask(task.id)
     await loadTasks()
   } catch (e) {
-    error.value = e.message
+    if (e.status === 409) {
+      task.status = 1
+      task.stageMessage = e.payload?.data?.message || '该任务正在分析中，正在接管进度'
+      task.progress = 0
+      showToast(task.stageMessage)
+      watchTask(task.id)
+      await loadTasks()
+    } else {
+      error.value = e.message
+    }
   } finally {
     busyTaskId.value = null
   }

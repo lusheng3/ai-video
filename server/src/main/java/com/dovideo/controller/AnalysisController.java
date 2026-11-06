@@ -11,6 +11,8 @@ import com.dovideo.service.TaskEventService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -40,10 +42,17 @@ public class AnalysisController {
 
     @RateLimit(rate = 1.0, capacity = 5)
     @PostMapping("/submit")
-    public Result<AnalysisSubmitResponse> submit(
+    public ResponseEntity<Result<AnalysisSubmitResponse>> submit(
             @Valid @RequestBody AnalysisSubmitRequest request,
             @RequestAttribute(AuthService.ATTR_USER_ID) Long userId) {
-        return Result.ok(analysisService.submit(request.getTaskId(), request.getUserGoal(), userId));
+        AnalysisSubmitResponse response =
+                analysisService.submit(request.getTaskId(), request.getUserGoal(), userId);
+        HttpStatus status = switch (response.getDisposition()) {
+            case "ACCEPTED" -> HttpStatus.ACCEPTED;
+            case "DUPLICATE" -> HttpStatus.CONFLICT;
+            default -> HttpStatus.OK;
+        };
+        return ResponseEntity.status(status).body(Result.ok(response));
     }
 
     @GetMapping("/status/{taskId}")

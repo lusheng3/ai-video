@@ -65,7 +65,7 @@ class AuthServiceTest {
 
         assertEquals(1001L, resp.getUserId());
         assertEquals("hanyihao", resp.getUsername());
-        assertEquals(1, resp.getAccountType());
+        assertEquals(0, resp.getAccountType());
         assertNotNull(resp.getToken());
         verify(valueOperations).set(eq("auth:token:" + resp.getToken()), any(), eq(Duration.ofHours(24)));
     }

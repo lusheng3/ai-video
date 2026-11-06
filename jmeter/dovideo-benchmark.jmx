@@ -151,9 +151,11 @@
           <boolProp name="HTTPSampler.DO_MULTIPART_POST">false</boolProp>
         </HTTPSamplerProxy>
         <hashTree>
-          <ResponseAssertion guiclass="AssertionGui" testclass="ResponseAssertion" testname="Assert 200 or 429" enabled="true">
+          <ResponseAssertion guiclass="AssertionGui" testclass="ResponseAssertion" testname="Assert 200/202/409/429" enabled="true">
             <collectionProp name="Asserion.test_strings">
               <stringProp name="49586">200</stringProp>
+              <stringProp name="49588">202</stringProp>
+              <stringProp name="49589">409</stringProp>
               <stringProp name="49587">429</stringProp>
             </collectionProp>
             <stringProp name="Assertion.custom_message"></stringProp>
@@ -242,9 +244,11 @@
           <boolProp name="HTTPSampler.DO_MULTIPART_POST">false</boolProp>
         </HTTPSamplerProxy>
         <hashTree>
-          <ResponseAssertion guiclass="AssertionGui" testclass="ResponseAssertion" testname="Assert 200 or 429" enabled="true">
+          <ResponseAssertion guiclass="AssertionGui" testclass="ResponseAssertion" testname="Assert 200/202/409/429" enabled="true">
             <collectionProp name="Asserion.test_strings">
               <stringProp name="49586">200</stringProp>
+              <stringProp name="49588">202</stringProp>
+              <stringProp name="49589">409</stringProp>
               <stringProp name="49587">429</stringProp>
             </collectionProp>
             <stringProp name="Assertion.custom_message"></stringProp>

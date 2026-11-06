@@ -206,6 +206,44 @@ class UploadServiceTest {
     }
 
     @Test
+    void shouldReuseCompletedObjectAcrossUsersOnlyAfterFullMd5Validation() {
+        String targetKey = "videos/" + SAMPLE_MD5 + "/lecture.mp4";
+        String sharedKey = "videos/" + SAMPLE_MD5 + "/existing.mp4";
+        VideoTaskRecord shared = VideoTaskRecord.builder()
+                .id(77L)
+                .userId(2002L)
+                .videoMd5(SAMPLE_MD5)
+                .fileUrl(sharedKey)
+                .status(TaskStatusEnum.UPLOADED.getCode())
+                .build();
+        when(redissonClient.getLock("dovideo:merge:" + SAMPLE_MD5)).thenReturn(mergeLock);
+        when(mergeLock.tryLock()).thenReturn(true);
+        when(mergeLock.isHeldByCurrentThread()).thenReturn(true);
+        when(taskRecordMapper.selectOne(any())).thenReturn(null, shared);
+        when(redisTemplate.opsForSet()).thenReturn(setOperations);
+        when(setOperations.size("upload:task:" + SAMPLE_MD5)).thenReturn(3L);
+        when(minioService.videoObjectKey(SAMPLE_MD5, "lecture.mp4")).thenReturn(targetKey);
+        when(minioService.composeChunks(SAMPLE_MD5, 3, "lecture.mp4")).thenReturn(targetKey);
+        when(minioService.calculateObjectMd5(targetKey)).thenReturn(SAMPLE_MD5);
+        doAnswer(inv -> {
+            VideoTaskRecord record = inv.getArgument(0);
+            record.setId(502L);
+            return 1;
+        }).when(taskRecordMapper).insert(any(VideoTaskRecord.class));
+
+        UploadMergeRequest request = new UploadMergeRequest();
+        request.setFileMd5(SAMPLE_MD5);
+        request.setFileName("lecture.mp4");
+        request.setTotalSize(15728640L);
+        request.setTotalChunks(3);
+
+        UploadMergeResponse response = uploadService.mergeChunks(request, 1001L);
+
+        assertEquals(sharedKey, response.getFileUrl());
+        verify(minioService).removeObject(targetKey);
+    }
+
+    @Test
     void shouldReconcileStuckMergingTaskWhenMinioObjectExists() {
         VideoTaskRecord stuck = VideoTaskRecord.builder()
                 .id(600L)

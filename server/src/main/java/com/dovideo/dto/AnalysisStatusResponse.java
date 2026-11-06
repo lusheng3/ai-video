@@ -14,6 +14,8 @@ public class AnalysisStatusResponse {
 
     private Long taskId;
     private String videoMd5;
+    private String userGoal;
+    private String goalDigest;
     private Integer status;
     private String statusLabel;
     private String message;

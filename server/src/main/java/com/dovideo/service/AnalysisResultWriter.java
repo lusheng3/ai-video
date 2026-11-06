@@ -14,10 +14,9 @@ import com.dovideo.mapper.VideoTranscriptionMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Duration;
 import java.time.LocalDateTime;
 
 /**
@@ -31,17 +30,14 @@ import java.time.LocalDateTime;
 @RequiredArgsConstructor
 public class AnalysisResultWriter {
 
-    public static final String STATUS_KEY_PREFIX = "video:status:";
-    public static final String SUCCESS = "SUCCESS";
-    public static final Duration STATUS_TTL = Duration.ofHours(1);
-
     private final VideoTranscriptionMapper transcriptionMapper;
     private final AiSummaryResultMapper summaryMapper;
     private final VideoTaskRecordMapper taskRecordMapper;
-    private final StringRedisTemplate redisTemplate;
+    private final AnalysisStateService stateService;
 
+    @Transactional
     public void persist(VideoTaskRecord task, String transcript, SummaryResult summary) {
-        saveTranscription(task, transcript);
+        saveTranscriptionIfAbsent(task, transcript);
         saveSummary(task, summary);
         markTaskSuccess(task);
     }
@@ -56,13 +52,14 @@ public class AnalysisResultWriter {
         taskRecordMapper.update(null, new LambdaUpdateWrapper<VideoTaskRecord>()
                 .eq(VideoTaskRecord::getId, task.getId())
                 .set(VideoTaskRecord::getStatus, TaskStatusEnum.SUCCESS.getCode())
+                .set(VideoTaskRecord::getUserGoal, task.getUserGoal())
+                .set(VideoTaskRecord::getGoalDigest, task.getGoalDigest())
                 .set(VideoTaskRecord::getErrorMsg, null)
                 .set(VideoTaskRecord::getUpdateTime, now));
-        redisTemplate.opsForValue().set(
-                STATUS_KEY_PREFIX + task.getVideoMd5(), SUCCESS, STATUS_TTL);
     }
 
-    private void saveTranscription(VideoTaskRecord task, String transcript) {
+    @Transactional
+    public void saveTranscriptionIfAbsent(VideoTaskRecord task, String transcript) {
         VideoTranscription existing = transcriptionMapper.selectOne(
                 new LambdaQueryWrapper<VideoTranscription>()
                         .eq(VideoTranscription::getVideoMd5, task.getVideoMd5())
@@ -90,15 +87,18 @@ public class AnalysisResultWriter {
         AiSummaryResult existing = summaryMapper.selectOne(
                 new LambdaQueryWrapper<AiSummaryResult>()
                         .eq(AiSummaryResult::getVideoMd5, task.getVideoMd5())
+                        .eq(AiSummaryResult::getGoalDigest, task.getGoalDigest())
                         .last("LIMIT 1"));
         if (existing != null) {
-            log.info("summary_already_exists videoMd5={} taskId={}", task.getVideoMd5(), task.getId());
+            log.info("summary_already_exists videoMd5={} goalDigest={} taskId={}",
+                    task.getVideoMd5(), task.getGoalDigest(), task.getId());
             return;
         }
         try {
             summaryMapper.insert(AiSummaryResult.builder()
                     .taskId(task.getId())
                     .videoMd5(task.getVideoMd5())
+                    .goalDigest(task.getGoalDigest())
                     .structuredData(JSON.toJSONString(summary))
                     .tokenCost(summary.getTokenCost() == null ? 0 : summary.getTokenCost())
                     .createTime(LocalDateTime.now())
@@ -106,7 +106,13 @@ public class AnalysisResultWriter {
                     .isDeleted(0)
                     .build());
         } catch (DuplicateKeyException ex) {
-            log.warn("summary_duplicate_key_ignored videoMd5={}", task.getVideoMd5());
+            log.warn("summary_duplicate_key_ignored videoMd5={} goalDigest={}",
+                    task.getVideoMd5(), task.getGoalDigest());
         }
+    }
+
+    public void cacheSuccess(VideoTaskRecord task) {
+        stateService.markSuccess(task.getId(), task.getVideoMd5(), task.getGoalDigest());
+        stateService.releaseActive(task.getId());
     }
 }

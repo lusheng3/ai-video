@@ -15,11 +15,15 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.Base64;
 import java.util.HexFormat;
 import java.util.UUID;
 
@@ -35,10 +39,14 @@ public class AuthService {
     public static final String ATTR_ACCOUNT_TYPE = "CURRENT_ACCOUNT_TYPE";
     private static final String TOKEN_KEY_PREFIX = "auth:token:";
     private static final Duration SESSION_TTL = Duration.ofHours(24);
-    private static final String PASSWORD_SALT = "dovideo-salt-2026:";
+    private static final String PASSWORD_PREFIX = "pbkdf2";
+    private static final int PASSWORD_ITERATIONS = 210_000;
+    private static final int PASSWORD_KEY_BITS = 256;
+    private static final int PASSWORD_SALT_BYTES = 16;
 
     private final UserInfoMapper userInfoMapper;
     private final StringRedisTemplate redisTemplate;
+    private final SecureRandom secureRandom = new SecureRandom();
 
     /**
      * 用户注册：利用数据库 uk_username 唯一索引防御并发同名注册
@@ -51,9 +59,6 @@ public class AuthService {
             throw new BusinessException(ErrorCode.CONFLICT, "用户名已存在");
         }
 
-        int accountType = request.getAccountType() != null && request.getAccountType() == AccountTypeEnum.VIP.getCode()
-                ? AccountTypeEnum.VIP.getCode()
-                : AccountTypeEnum.FREE.getCode();
         String nickname = (request.getNickname() == null || request.getNickname().isBlank())
                 ? username
                 : request.getNickname().trim();
@@ -62,7 +67,8 @@ public class AuthService {
                 .username(username)
                 .passwordHash(hashPassword(request.getPassword()))
                 .nickname(nickname)
-                .accountType(accountType)
+                // 账户等级只能由后台或支付回调修改，绝不能信任注册请求。
+                .accountType(AccountTypeEnum.FREE.getCode())
                 .createTime(LocalDateTime.now())
                 .updateTime(LocalDateTime.now())
                 .isDeleted(0)
@@ -84,8 +90,13 @@ public class AuthService {
         String username = request.getUsername().trim();
         UserInfo user = userInfoMapper.selectOne(
                 new LambdaQueryWrapper<UserInfo>().eq(UserInfo::getUsername, username));
-        if (user == null || !user.getPasswordHash().equals(hashPassword(request.getPassword()))) {
+        if (user == null || !passwordMatches(request.getPassword(), user.getPasswordHash())) {
             throw new BusinessException(ErrorCode.UNAUTHORIZED, "用户名或密码错误");
+        }
+        if (!user.getPasswordHash().startsWith(PASSWORD_PREFIX + "$")) {
+            user.setPasswordHash(hashPassword(request.getPassword()));
+            user.setUpdateTime(LocalDateTime.now());
+            userInfoMapper.updateById(user);
         }
         return issueSessionToken(user);
     }
@@ -142,12 +153,59 @@ public class AuthService {
     }
 
     public String hashPassword(String rawPassword) {
+        byte[] salt = new byte[PASSWORD_SALT_BYTES];
+        secureRandom.nextBytes(salt);
+        byte[] hash = derive(rawPassword, salt, PASSWORD_ITERATIONS);
+        return String.join("$",
+                PASSWORD_PREFIX,
+                String.valueOf(PASSWORD_ITERATIONS),
+                Base64.getEncoder().withoutPadding().encodeToString(salt),
+                Base64.getEncoder().withoutPadding().encodeToString(hash));
+    }
+
+    public boolean passwordMatches(String rawPassword, String storedPassword) {
+        if (rawPassword == null || storedPassword == null) {
+            return false;
+        }
+        if (!storedPassword.startsWith(PASSWORD_PREFIX + "$")) {
+            return MessageDigest.isEqual(
+                    legacySha256(rawPassword).getBytes(StandardCharsets.UTF_8),
+                    storedPassword.getBytes(StandardCharsets.UTF_8));
+        }
+        try {
+            String[] parts = storedPassword.split("\\$", -1);
+            int iterations = Integer.parseInt(parts[1]);
+            byte[] salt = Base64.getDecoder().decode(parts[2]);
+            byte[] expected = Base64.getDecoder().decode(parts[3]);
+            byte[] actual = derive(rawPassword, salt, iterations);
+            return MessageDigest.isEqual(actual, expected);
+        } catch (RuntimeException ex) {
+            return false;
+        }
+    }
+
+    private String legacySha256(String rawPassword) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = digest.digest((PASSWORD_SALT + rawPassword).getBytes(StandardCharsets.UTF_8));
+            byte[] bytes = digest.digest(("dovideo-salt-2026:" + rawPassword)
+                    .getBytes(StandardCharsets.UTF_8));
             return HexFormat.of().formatHex(bytes);
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 algorithm not available", e);
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 algorithm not available", ex);
+        }
+    }
+
+    private byte[] derive(String rawPassword, byte[] salt, int iterations) {
+        PBEKeySpec spec = new PBEKeySpec(
+                rawPassword.toCharArray(), salt, iterations, PASSWORD_KEY_BITS);
+        try {
+            return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+                    .generateSecret(spec)
+                    .getEncoded();
+        } catch (Exception ex) {
+            throw new IllegalStateException("密码哈希失败", ex);
+        } finally {
+            spec.clearPassword();
         }
     }
 }

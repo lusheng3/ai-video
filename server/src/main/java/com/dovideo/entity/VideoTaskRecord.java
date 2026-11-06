@@ -36,6 +36,12 @@ public class VideoTaskRecord {
     /** 视频文件的32位十六进制MD5内容指纹 */
     private String videoMd5;
 
+    /** 当前一次分析目标原文；上传完成时为空 */
+    private String userGoal;
+
+    /** 当前一次分析目标的SHA-256摘要，用于目标级幂等和结果隔离 */
+    private String goalDigest;
+
     /** MinIO存储对象路径，例如 videos/{md5}/{fileName} */
     private String fileUrl;
 

@@ -29,6 +29,8 @@ public class AiSummaryResult {
 
     private String videoMd5;
 
+    private String goalDigest;
+
     /** JSON字符串：{"summary": "...", "keyPoints": [...], "chapters": [...]} */
     private String structuredData;
 
