@@ -5,7 +5,7 @@
 ### 1.1 核心目标
 构建一个面向长视频内容解析的全栈系统（核心重心在 **Spring Boot 后端高并发与分布式架构**），完整落地简历「项目二：AI长视频解析平台」的全部 5 条核心技术亮点：
 1. **RocketMQ 异步解耦**：将耗时 60s+ 的视频转码、语音转写与 AI 总结从 HTTP 请求线程剥离，接口仅保留落库与消息投递，提交响应时间控制在 **50ms 以内**。
-2. **分片上传、秒传与断点续传**：前端按 **5MB** 切片并计算 MD5，后端基于 **Redis Set** 维护已传分片索引，支持秒传预检、中断后按差集补传、以及基于 **MinIO `composeObject`** 的服务端原子合并。
+2. **分片上传、秒传与断点续传**：前端按 **5MB** 切片并计算 MD5，后端基于 **Redis Set** 维护已传分片索引，支持秒传预检、中断后按差集补传、基于 **MinIO `composeObject`** 的服务端原子合并，以及合并后流式复算完整 MD5 与客户端指纹对拍。
 3. **Redisson + MD5 内容级去重与消费幂等**：通过「前置状态拦截 + Redisson WatchDog 分布式锁（消费者标准六步流程）+ MySQL 唯一索引物理兜底」三重防线，杜绝重复点击与 MQ 重投带来的算力和 Token 浪费。
 4. **MinIO 服务无状态化与安全存储**：音视频文件全量下沉至 MinIO 私有 Bucket，通过 **5 分钟有效期的 Pre-signed URL（预签名 URL）** 保障防盗链与隐私安全，通过 **MinIO Lifecycle（生命周期规则）** 24 小时自动物理清理 `temp_chunks/` 僵尸分片。
 5. **Redis 令牌桶限流与两级指数退避重试**：基于 **Redis Hash + Lua 脚本**实现惰性令牌桶限流（拦截突发与恶意刷接口，返回 HTTP 429）；配合「API 调用级指数退避重试（`1s -> 2s -> 4s`）+ RocketMQ 阶梯延迟重投（最多 3 次）+ 死信队列（DLQ）兜底」，控制第三方抖动与成本风险。
@@ -39,8 +39,8 @@
    - **第 1 步（合并锁 + 状态幂等）**：后端通过 Redisson 尝试获取合并锁 `dovideo:merge:{fileMd5}`，未抢到锁返回 `HTTP 409`；抢到锁后先查 MySQL 是否已存在合并完成的记录，若已完成直接返回结果；
    - **第 2 步（校验分片完整性）**：读取 Redis Set `SCARD upload:task:{fileMd5}`，确认已传分片数量严格等于 `totalChunks`；
    - **第 3 步（状态标记“合并中”）**：在 MySQL `video_task_record` 插入或更新状态为 `5（合并中）`，配合后台定时巡检任务兜底“MinIO 合并成功但 DB 更新失败”的一致性问题；
-   - **第 4 步（MinIO 服务端合并）**：调用 MinIO `composeObject` API，将 `temp_chunks/{fileMd5}/0..N-1` 在存储引擎内部原子拼接为正式对象 `videos/{fileMd5}/{fileName}`；
-   - **第 5 步（落库与清理）**：更新 `video_task_record` 状态为 `0（待分析/已上传）`，异步清理 MinIO 临时分片与 Redis Set `upload:task:{fileMd5}`，返回 `taskId`。
+   - **第 4 步（MinIO 服务端合并 + 完整 MD5 对拍）**：调用 MinIO `composeObject` API，将 `temp_chunks/{fileMd5}/0..N-1` 在存储引擎内部原子拼接为正式对象 `videos/{fileMd5}/{fileName}`；随后流式读取完整对象并重新计算 MD5，与请求中的 `fileMd5` 对拍；
+   - **第 5 步（落库与清理）**：对拍一致时更新 `video_task_record` 状态为 `0（待分析/已上传）`，清理 MinIO 临时分片与 Redis Set `upload:task:{fileMd5}`，返回 `taskId`；对拍不一致时删除错误成品、清理分片与 Redis 进度，将任务标记为失败并返回 400。
 
 ### 旅程 C：令牌桶限流与 RocketMQ 异步分析提交（50ms 极速响应）
 1. 用户点击“开始 AI 分析”（`POST /api/analysis/submit`），携带 `taskId`（或 `videoMd5`）。
@@ -90,9 +90,10 @@
 | 异常/边界场景 | 系统的确定性处理行为 |
 |---|---|
 | 单个分片上传网络中断或 MD5 校验不匹配 | 后端不写 Redis Set，返回失败；前端对该分片单独重试最多 3 次，仍失败则暂停，下次通过 `/check` 算差集断点续传 |
+| 合并后完整文件 MD5 与客户端指纹不一致 | 删除错误成品，清空 Redis 分片进度并删除临时分片，任务标记为 `4（失败）`，返回 HTTP 400，要求重新上传 |
 | 用户传了一半彻底放弃（僵尸任务） | Redis Set `upload:task:{fileMd5}` 24 小时 TTL 自动过期；MinIO `temp_chunks/` 前缀对象由 Bucket Lifecycle 规则满 1 天自动物理删除 |
 | 最后几个分片并发完成 | 后端不在 `/chunk` 接口自动合并，统一由前端收到全部 200 后调一次 `/merge`，且 `/merge` 加 `dovideo:merge:{fileMd5}` 锁，彻底消除并发合并冲突 |
-| MinIO `composeObject` 成功但随后更新 MySQL 失败 | 合并前先将任务状态置为 `5（合并中）`；后台定时校准任务扫描超时仍处于“合并中”的记录，向 MinIO `statObject` 核实文件是否存在，存在则自动补齐完成状态并清理分片，不存在则回退为“待上传” |
+| MinIO `composeObject` 成功但随后更新 MySQL 失败 | 合并前先将任务状态置为 `5（合并中）`；后台定时校准任务扫描超时仍处于“合并中”的记录，重新计算成品完整 MD5，一致才补齐完成状态，不一致则删除成品并标记失败，不存在则回退为“待上传” |
 | 令牌桶放行后，发送 RocketMQ 网络断开 | `catch` 捕获发送异常，回滚 Redis `PROCESSING` 标记并立即向前端返回 503“系统繁忙，请重试”；令牌随时间自然恢复，无需手动加回 |
 | 视频转码 + AI 分析耗时超过 30 秒 | Redisson WatchDog 后台定时任务每 10 秒检查当前线程仍持锁，自动将锁 TTL 重置为 30 秒，绝不提前过期；若 JVM 宕机，WatchDog 停止续期，30 秒后锁自动释放，绝不死锁 |
 | 缓存与锁极端同时失效，多线程并发写结果 | `video_transcription` 与 `ai_summary_result` 对 `video_md5` 建立 `UNIQUE` 唯一索引，数据库 B+ 树拒绝重复写入并抛出 `DuplicateKeyException`，代码捕获后幂等收敛 |
@@ -169,7 +170,7 @@
 ---
 
 ## 5. 验收标准（Acceptance Criteria）
-1. **分片、断点续传与秒传验收**：上传一个多切片文件，中途中断后调 `/api/upload/check` 能准确返回已传分片号；补传剩余分片后调 `/api/upload/merge` 能通过 MinIO `composeObject` 合成完整文件；再次上传同一文件时 `/api/upload/check` 直接触发秒传（`deduplicated=true`）。
+1. **分片、断点续传与秒传验收**：上传一个多切片文件，中途中断后调 `/api/upload/check` 能准确返回已传分片号；补传剩余分片后调 `/api/upload/merge` 能通过 MinIO `composeObject` 合成完整文件，并由服务端流式重算完整 MD5 与客户端 `fileMd5` 对拍；再次上传同一文件时 `/api/upload/check` 直接触发秒传（`deduplicated=true`）。
 2. **异步 50ms 响应与轮询闭环验收**：调用 `/api/analysis/submit` 响应时间在本地基准测试下稳定 < 50ms；前端每 3s 轮询 `/api/analysis/status/{taskId}` 能依次观察到 `PROCESSING -> SUCCESS` 并拿到完整转写稿与 JSON 总结。
 3. **幂等与防重验收**：10 个并发线程同时对同一视频发起分析或模拟 MQ 重复投递，底层 ASR/LLM 只被执行 1 次，数据库 `video_transcription` 与 `ai_summary_result` 仅生成 1 条记录。
 4. **限流与退避容错验收**：高频请求超出令牌桶阈值时准确返回 `HTTP 429`；模拟第三方 API 超时能观察到 `1s -> 2s -> 4s` 指数退避日志；连续失败 3 次后任务状态准确变更为 `FAILED` 并进入死信處理。

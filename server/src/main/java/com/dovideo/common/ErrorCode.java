@@ -8,6 +8,7 @@ public enum ErrorCode {
 
     BAD_REQUEST(400, HttpStatus.BAD_REQUEST, "请求参数不合法"),
     CHUNK_CORRUPTED(400, HttpStatus.BAD_REQUEST, "分片MD5校验失败，数据已损坏，请重传该分片"),
+    FILE_MD5_MISMATCH(400, HttpStatus.BAD_REQUEST, "完整文件MD5校验失败，数据已损坏，请重新上传"),
     UNAUTHORIZED(401, HttpStatus.UNAUTHORIZED, "未登录或登录已过期"),
     FORBIDDEN(403, HttpStatus.FORBIDDEN, "无权访问该资源"),
     NOT_FOUND(404, HttpStatus.NOT_FOUND, "请求的资源不存在"),

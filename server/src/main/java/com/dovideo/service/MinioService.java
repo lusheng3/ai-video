@@ -26,8 +26,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.io.InputStream;
+import java.security.MessageDigest;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -36,7 +38,8 @@ import java.util.concurrent.TimeUnit;
  * 1. 服务无状态化：所有视频分片与成品文件下沉至 MinIO 私有 Bucket（默认 Private 权限）。
  * 2. 生命周期规则（Lifecycle）：自动为 temp_chunks/ 前缀配置 1 天过期物理删除，清理僵尸分片。
  * 3. 服务端原子合并（composeObject）：在 MinIO 存储引擎内部直接将分片拼接为完整视频，免去后端磁盘中转。
- * 4. 预签名 URL（Pre-signed URL）：签发 5 分钟有效期的临时带签名访问链接，防止资源被盗链。
+ * 4. 完整 MD5：合并后流式读取成品并重算 MD5，供上传链路与客户端指纹对拍。
+ * 5. 预签名 URL（Pre-signed URL）：签发 5 分钟有效期的临时带签名访问链接，防止资源被盗链。
  */
 @Slf4j
 @Service
@@ -189,6 +192,39 @@ public class MinioService {
                     .build());
         } catch (Exception ex) {
             throw new BusinessException(ErrorCode.SERVICE_UNAVAILABLE, "读取MinIO视频文件流失败", ex);
+        }
+    }
+
+    /**
+     * 流式读取对象内容并计算完整文件 MD5，避免将 GB 级视频重新落盘。
+     */
+    public String calculateObjectMd5(String objectKey) {
+        try (InputStream inputStream = getObjectStream(objectKey)) {
+            MessageDigest digest = MessageDigest.getInstance("MD5");
+            byte[] buffer = new byte[1024 * 1024];
+            int read;
+            while ((read = inputStream.read(buffer)) != -1) {
+                digest.update(buffer, 0, read);
+            }
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (BusinessException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw new BusinessException(ErrorCode.SERVICE_UNAVAILABLE, "读取合并文件并计算MD5失败", ex);
+        }
+    }
+
+    /**
+     * 删除 MinIO 对象。主要用于完整 MD5 校验失败后的错误成品清理。
+     */
+    public void removeObject(String objectKey) {
+        try {
+            minioClient.removeObject(RemoveObjectArgs.builder()
+                    .bucket(appProperties.getMinio().getBucketName())
+                    .object(objectKey)
+                    .build());
+        } catch (Exception ex) {
+            throw new BusinessException(ErrorCode.SERVICE_UNAVAILABLE, "删除MinIO对象失败", ex);
         }
     }
 

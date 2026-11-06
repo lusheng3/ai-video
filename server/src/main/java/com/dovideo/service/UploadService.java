@@ -1,6 +1,7 @@
 package com.dovideo.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.dovideo.common.ErrorCode;
 import com.dovideo.config.AppProperties;
 import com.dovideo.dto.UploadCheckResponse;
@@ -32,7 +33,7 @@ import java.util.Set;
 import java.util.TreeSet;
 
 /**
- * 分片上传、秒传、Redis Set 断点续传与 MinIO composeObject 合并服务（对应简历亮点2 & 亮点4）
+ * 分片上传、秒传、Redis Set 断点续传、composeObject 合并与完整 MD5 对拍服务。
  */
 @Slf4j
 @Service
@@ -65,7 +66,9 @@ public class UploadService {
                 new LambdaQueryWrapper<VideoTaskRecord>()
                         .eq(VideoTaskRecord::getVideoMd5, normalizedMd5)
                         .isNotNull(VideoTaskRecord::getFileUrl)
-                        .ne(VideoTaskRecord::getStatus, TaskStatusEnum.MERGING.getCode())
+                        .in(VideoTaskRecord::getStatus,
+                                TaskStatusEnum.UPLOADED.getCode(),
+                                TaskStatusEnum.SUCCESS.getCode())
                         .orderByDesc(VideoTaskRecord::getId)
                         .last("LIMIT 1"));
 
@@ -178,7 +181,9 @@ public class UploadService {
                             .eq(VideoTaskRecord::getUserId, userId)
                             .eq(VideoTaskRecord::getVideoMd5, normalizedMd5)
                             .isNotNull(VideoTaskRecord::getFileUrl)
-                            .ne(VideoTaskRecord::getStatus, TaskStatusEnum.MERGING.getCode())
+                            .in(VideoTaskRecord::getStatus,
+                                    TaskStatusEnum.UPLOADED.getCode(),
+                                    TaskStatusEnum.SUCCESS.getCode())
                             .orderByDesc(VideoTaskRecord::getId)
                             .last("LIMIT 1"));
             if (completedRecord != null) {
@@ -221,6 +226,17 @@ public class UploadService {
                     request.getTotalChunks(),
                     request.getFileName());
 
+            // composeObject 成功后必须重新读取完整对象并计算 MD5，不能只相信客户端提交的指纹。
+            String actualMd5 = minioService.calculateObjectMd5(mergedObjectKey);
+            if (!normalizedMd5.equalsIgnoreCase(actualMd5)) {
+                discardInvalidMergedObject(
+                        taskRecord,
+                        redisSetKey,
+                        request.getTotalChunks(),
+                        mergedObjectKey,
+                        actualMd5);
+            }
+
             // 【更新状态为已上传待分析(0)并清理现场】
             taskRecord.setFileUrl(mergedObjectKey);
             taskRecord.setStatus(TaskStatusEnum.UPLOADED.getCode());
@@ -241,6 +257,47 @@ public class UploadService {
                 mergeLock.unlock();
             }
         }
+    }
+
+    /**
+     * 完整 MD5 对拍失败时，错误成品和分析任务都不能保留为可复用状态。
+     * 同时清空分片进度，让用户重试时真正重新上传，而不是再次合并同一批错误分片。
+     */
+    private void discardInvalidMergedObject(VideoTaskRecord taskRecord,
+                                            String redisSetKey,
+                                            int totalChunks,
+                                            String mergedObjectKey,
+                                            String actualMd5) {
+        String message = "完整文件内容校验失败，请重新上传";
+        log.error("merged_file_md5_mismatch taskId={} fileMd5={} actualMd5={} objectKey={}",
+                taskRecord.getId(), taskRecord.getVideoMd5(), actualMd5, mergedObjectKey);
+
+        BusinessException mismatch = new BusinessException(ErrorCode.FILE_MD5_MISMATCH, message);
+        try {
+            minioService.removeObject(mergedObjectKey);
+        } catch (RuntimeException cleanupError) {
+            mismatch.addSuppressed(cleanupError);
+            log.error("invalid_merged_object_cleanup_failed objectKey={}", mergedObjectKey, cleanupError);
+        }
+        try {
+            redisTemplate.delete(redisSetKey);
+        } catch (RuntimeException cleanupError) {
+            mismatch.addSuppressed(cleanupError);
+            log.error("invalid_merged_redis_cleanup_failed redisSetKey={}", redisSetKey, cleanupError);
+        }
+        minioService.removeChunkObjects(taskRecord.getVideoMd5(), totalChunks);
+        try {
+            taskRecordMapper.update(null, new UpdateWrapper<VideoTaskRecord>()
+                    .eq("id", taskRecord.getId())
+                    .set("file_url", null)
+                    .set("status", TaskStatusEnum.FAILED.getCode())
+                    .set("error_msg", message)
+                    .set("update_time", LocalDateTime.now()));
+        } catch (RuntimeException updateError) {
+            mismatch.addSuppressed(updateError);
+            log.error("invalid_merged_task_mark_failed_error taskId={}", taskRecord.getId(), updateError);
+        }
+        throw mismatch;
     }
 
     /**

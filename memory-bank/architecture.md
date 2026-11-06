@@ -77,9 +77,9 @@ DOVideo-AI-v2/
         │   │   │   └── DeadLetterConsumer.java          # 死信队列兜底：置 FAILED 并写 Redis 失败原因
         │   │   ├── service/                             # 【业务逻辑层 Service】
         │   │   │   ├── AuthService.java                 # 用户注册、登录、Redis 会话管理
-        │   │   │   ├── MinioService.java                # MinIO 私有桶、Lifecycle规则、composeObject合并、预签名URL
-        │   │   │   ├── UploadService.java               # 秒传预检、Redis Set 断点续传、先落盘后记账、合并锁与 composeObject
-        │   │   │   ├── UploadReconciliationJob.java     # 后台定时校准卡在“合并中(status=5)”的任务，保障最终一致性
+        │   │   │   ├── MinioService.java                # MinIO 私有桶、Lifecycle、composeObject、完整对象 MD5 流式计算、预签名URL
+        │   │   │   ├── UploadService.java               # 秒传预检、Redis Set 续传、合并锁、composeObject 与完整 MD5 对拍
+        │   │   │   ├── UploadReconciliationJob.java     # 后台校准“合并中”任务，并复核完整 MD5 后才推进成功
         │   │   │   ├── AudioExtractionService.java      # MinIO 下载 + FFmpeg 分段 + 逐段 ASR（可回调进度）
         │   │   │   ├── AnalysisService.java             # 前置状态拦截 + MQ 同步投递 + 阶段快照/降级轮询聚合 + 同步对照组
         │   │   │   ├── TaskEventService.java            # SSE 订阅表 + Redis Pub/Sub 广播 + video:stage 快照读写
@@ -132,6 +132,6 @@ DOVideo-AI-v2/
                 │   └── ExponentialBackoffRetryTest.java # 1s->2s->4s 指数退避与永久异常快速失败
                 └── service/
                     ├── AuthServiceTest.java             # 注册/登录/唯一键冲突单元测试
-                    ├── MinioServiceTest.java            # MinIO Lifecycle/composeObject/预签名URL单元测试
-                    └── UploadServiceTest.java           # 秒传/断点续传/分片MD5校验/先落盘后记账/合并锁/校准单测
+                    ├── MinioServiceTest.java            # MinIO Lifecycle/composeObject/完整对象MD5/预签名URL单测
+                    └── UploadServiceTest.java           # 秒传/续传/分片与完整MD5校验/合并锁/校准单测
 ```

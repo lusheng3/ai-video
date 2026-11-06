@@ -8,7 +8,7 @@
 
 | HTTP | code | 场景 |
 |---|---|---|
-| 400 | 400 | 参数校验失败 / 分片 MD5 损坏 |
+| 400 | 400 | 参数校验失败 / 分片 MD5 损坏 / 完整文件 MD5 对拍失败 |
 | 401 | 401 | 未登录或 Token 过期 |
 | 403 | 403 | 越权访问他人资源 |
 | 404 | 404 | 任务不存在 |
@@ -102,7 +102,9 @@
 { "taskId": 1, "videoMd5": "385a...", "fileUrl": "videos/385a.../lecture.mp4", "status": 0 }
 ```
 
-> 服务端：Redisson 合并锁 + 状态幂等 + `SCARD == totalChunks` 校验 + MinIO `composeObject`。
+> 服务端：Redisson 合并锁 + 状态幂等 + `SCARD == totalChunks` 校验 + MinIO `composeObject` + 流式重算完整文件 MD5。
+
+合并成功后，服务端会重新读取 MinIO 成品对象并计算完整 MD5。只有计算结果与请求中的 `fileMd5` 完全一致，任务才会落为 `status=0`。若不一致，服务端删除错误成品、清空 Redis 分片进度和临时分片，将任务标记为失败，并返回 `HTTP 400`，客户端需要重新上传。
 
 ### 2.4 预签名播放地址
 `GET /api/media/play-url/{taskId}`

@@ -1,5 +1,6 @@
 package com.dovideo.service;
 
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.dovideo.common.ErrorCode;
 import com.dovideo.config.AppProperties;
 import com.dovideo.dto.UploadCheckResponse;
@@ -34,6 +35,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
@@ -142,6 +144,8 @@ class UploadServiceTest {
                 .thenReturn("videos/" + SAMPLE_MD5 + "/lecture.mp4");
         when(minioService.composeChunks(SAMPLE_MD5, 3, "lecture.mp4"))
                 .thenReturn("videos/" + SAMPLE_MD5 + "/lecture.mp4");
+        when(minioService.calculateObjectMd5("videos/" + SAMPLE_MD5 + "/lecture.mp4"))
+                .thenReturn(SAMPLE_MD5);
         doAnswer(inv -> {
             VideoTaskRecord r = inv.getArgument(0);
             r.setId(500L);
@@ -159,8 +163,45 @@ class UploadServiceTest {
         assertEquals(500L, resp.getTaskId());
         assertEquals(TaskStatusEnum.UPLOADED.getCode(), resp.getStatus());
         verify(minioService).composeChunks(SAMPLE_MD5, 3, "lecture.mp4");
+        verify(minioService).calculateObjectMd5("videos/" + SAMPLE_MD5 + "/lecture.mp4");
         verify(redisTemplate).delete("upload:task:" + SAMPLE_MD5);
         verify(minioService).removeChunkObjects(SAMPLE_MD5, 3);
+        verify(mergeLock).unlock();
+    }
+
+    @Test
+    void shouldRejectMergedFileWhenFullMd5DoesNotMatchClientFingerprint() {
+        String targetKey = "videos/" + SAMPLE_MD5 + "/lecture.mp4";
+        when(redissonClient.getLock("dovideo:merge:" + SAMPLE_MD5)).thenReturn(mergeLock);
+        when(mergeLock.tryLock()).thenReturn(true);
+        when(mergeLock.isHeldByCurrentThread()).thenReturn(true);
+        when(taskRecordMapper.selectOne(any())).thenReturn(null);
+        when(redisTemplate.opsForSet()).thenReturn(setOperations);
+        when(setOperations.size("upload:task:" + SAMPLE_MD5)).thenReturn(3L);
+        when(minioService.videoObjectKey(SAMPLE_MD5, "lecture.mp4")).thenReturn(targetKey);
+        when(minioService.composeChunks(SAMPLE_MD5, 3, "lecture.mp4")).thenReturn(targetKey);
+        when(minioService.calculateObjectMd5(targetKey)).thenReturn("0".repeat(32));
+        doAnswer(inv -> {
+            VideoTaskRecord record = inv.getArgument(0);
+            record.setId(501L);
+            return 1;
+        }).when(taskRecordMapper).insert(any(VideoTaskRecord.class));
+
+        UploadMergeRequest request = new UploadMergeRequest();
+        request.setFileMd5(SAMPLE_MD5);
+        request.setFileName("lecture.mp4");
+        request.setTotalSize(15728640L);
+        request.setTotalChunks(3);
+
+        BusinessException error = assertThrows(
+                BusinessException.class, () -> uploadService.mergeChunks(request, 1001L));
+
+        assertEquals(ErrorCode.FILE_MD5_MISMATCH, error.getErrorCode());
+        verify(minioService).removeObject(targetKey);
+        verify(redisTemplate).delete("upload:task:" + SAMPLE_MD5);
+        verify(minioService).removeChunkObjects(SAMPLE_MD5, 3);
+        verify(taskRecordMapper).update(isNull(), any(UpdateWrapper.class));
+        verify(taskRecordMapper, never()).updateById(any(VideoTaskRecord.class));
         verify(mergeLock).unlock();
     }
 
@@ -176,12 +217,37 @@ class UploadServiceTest {
                 .build();
         when(taskRecordMapper.selectList(any())).thenReturn(List.of(stuck));
         when(minioService.objectExists("videos/" + SAMPLE_MD5 + "/lecture.mp4")).thenReturn(true);
+        when(minioService.calculateObjectMd5("videos/" + SAMPLE_MD5 + "/lecture.mp4"))
+                .thenReturn(SAMPLE_MD5);
 
         int repaired = reconciliationJob.reconcileStuckMergingTasks();
 
         assertEquals(1, repaired);
-        assertEquals(TaskStatusEnum.UPLOADED.getCode(), stuck.getStatus());
-        verify(taskRecordMapper).updateById(stuck);
+        verify(taskRecordMapper).update(isNull(), any(UpdateWrapper.class));
         verify(minioService).removeChunkObjects(SAMPLE_MD5, 3);
+    }
+
+    @Test
+    void shouldReconcileStuckMergingTaskByDiscardingObjectWithMismatchedMd5() {
+        String targetKey = "videos/" + SAMPLE_MD5 + "/lecture.mp4";
+        VideoTaskRecord stuck = VideoTaskRecord.builder()
+                .id(601L)
+                .userId(1001L)
+                .videoMd5(SAMPLE_MD5)
+                .totalChunks(3)
+                .fileUrl(targetKey)
+                .status(TaskStatusEnum.MERGING.getCode())
+                .build();
+        when(taskRecordMapper.selectList(any())).thenReturn(List.of(stuck));
+        when(minioService.objectExists(targetKey)).thenReturn(true);
+        when(minioService.calculateObjectMd5(targetKey)).thenReturn("0".repeat(32));
+
+        int repaired = reconciliationJob.reconcileStuckMergingTasks();
+
+        assertEquals(1, repaired);
+        verify(minioService).removeObject(targetKey);
+        verify(redisTemplate).delete("upload:task:" + SAMPLE_MD5);
+        verify(minioService).removeChunkObjects(SAMPLE_MD5, 3);
+        verify(taskRecordMapper).update(isNull(), any(UpdateWrapper.class));
     }
 }

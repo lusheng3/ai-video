@@ -92,3 +92,10 @@ pm run dev 启动后 http://127.0.0.1:5173 返回 200，Vite /api 代理到后�
   - 前端 `taskEvents.js`：因 `EventSource` 不能携带 `Authorization`，改用 `fetch` 读取事件流；断线指数退避 1s→2s→4s→8s→15s，连续 5 次失败或接口 404/405 时降级为 3s 轮询；401/403 直接终态报错。`TaskList.vue`/`ResultPanel.vue` 展示阶段文案与进度条。
   - 文档：`docs/api-contract.md` 新增 3.3 SSE 事件流与阶段表，3.2 轮询补充 `stage/progress`。
   - 验证：`mvn test` 全量 **40/40** 通过；已完成任务订阅 SSE 收到 `COMPLETED` 快照后连接立即关闭；真实任务订阅中实时收到 `ASR(59%) → LLM(78%) → PERSISTING(92%) → COMPLETED(100%)`；Redis 快照 TTL 实测 3591s；前端 `npm run build` 通过（97.57 kB JS）。
+
+- **2026-11-07 [完整文件 MD5 对拍]**：
+  - `MinioService.calculateObjectMd5` 新增流式计算完整对象 MD5，不把 GB 级成品重新落盘。
+  - `/api/upload/merge` 在 `composeObject` 成功后重新计算完整 MD5，与前端提交的 `fileMd5` 对拍；不一致时删除错误成品、清空 Redis 分片进度与 MinIO 临时分片，任务置为 FAILED 并返回 400。
+  - `UploadReconciliationJob` 不再只凭对象存在推进成功；超时“合并中”任务必须重新核对完整 MD5，一致才转为 UPLOADED。
+  - `checkUpload` 与合并幂等查询只接受 UPLOADED/SUCCESS 状态，避免失败任务被误判为秒传命中。
+  - 新增完整 MD5 流式计算、正常对拍、对拍失败清理、后台校准对拍测试；`mvn test` 全量 **43/43** 通过。

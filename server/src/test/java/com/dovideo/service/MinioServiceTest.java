@@ -16,10 +16,15 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.io.ByteArrayInputStream;
+import java.nio.charset.StandardCharsets;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -82,5 +87,17 @@ class MinioServiceTest {
 
         assertTrue(url.contains("X-Amz-Expires=300"));
         assertTrue(exists);
+    }
+
+    @Test
+    void shouldCalculateFullObjectMd5ByStreamingContent() {
+        String objectKey = "videos/md5/course.mp4";
+        MinioService service = spy(minioService);
+        doReturn(new ByteArrayInputStream("hello".getBytes(StandardCharsets.UTF_8)))
+                .when(service).getObjectStream(objectKey);
+
+        String md5 = service.calculateObjectMd5(objectKey);
+
+        assertEquals("5d41402abc4b2a76b9719d911017c592", md5);
     }
 }
